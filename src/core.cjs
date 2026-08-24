@@ -145,6 +145,7 @@
 
   const inferEnemyFactionId = (ownFactionId, scores, rosters) => {
     const ownScore = scoreForFaction(scores, ownFactionId);
+    if (ownScore && !ownScore.start) return "";
     const explicitOpponent = String(ownScore?.opponentFactionId || ownScore?.opponent_faction_id || "").trim();
     if (explicitOpponent && explicitOpponent !== String(ownFactionId)) return explicitOpponent;
 
@@ -168,12 +169,13 @@
     if (Array.isArray(payload?.members)) {
       return { version, members: payload.members.slice(), needsSnapshot: false };
     }
+    if (existing.needsSnapshot) return { ...existing, needsSnapshot: true };
 
     const changed = Array.isArray(payload?.changedMembers) ? payload.changedMembers : [];
     const removed = new Set((payload?.removedMemberIds || []).map((id) => Number(id)));
     if (!changed.length && !removed.size) return { ...existing, needsSnapshot: false };
     const baseVersion = Number(payload?.baseVersion || 0);
-    if (existing.version && baseVersion && existing.version !== baseVersion) {
+    if (baseVersion && existing.version !== baseVersion) {
       return { ...existing, needsSnapshot: true };
     }
 
@@ -287,13 +289,15 @@
     }
 
     const numericOwnBsp = Number(ownBsp || 0);
-    const onlineTargets = enemies
-      .filter((member) => !activeWatchedIds.has(Number(member?.member_id || 0)))
-      .filter((member) => memberActivity(member) === "online" && memberStatus(member) === "okay")
-      .filter((member) => memberLocation(member) === "torn")
-      .filter((member) => !numericOwnBsp || !member.bsp || Number(member.bsp) <= numericOwnBsp * 1.25)
-      .sort((a, b) => Number(b.bsp || 0) - Number(a.bsp || 0))
-      .slice(0, 3);
+    const onlineTargets = numericOwnBsp > 0
+      ? enemies
+        .filter((member) => !activeWatchedIds.has(Number(member?.member_id || 0)))
+        .filter((member) => memberActivity(member) === "online" && memberStatus(member) === "okay")
+        .filter((member) => memberLocation(member) === "torn")
+        .filter((member) => !member.bsp || Number(member.bsp) <= numericOwnBsp * 1.25)
+        .sort((a, b) => Number(b.bsp || 0) - Number(a.bsp || 0))
+        .slice(0, 3)
+      : [];
     for (const member of onlineTargets) {
       result.push({
         key: `online-${member.member_id}`,

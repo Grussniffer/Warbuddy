@@ -7,6 +7,16 @@ import { runInNewContext } from "node:vm";
 const require = createRequire(import.meta.url);
 const core = require("../src/core.cjs");
 
+const compactSource = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+const sourceSection = (source, startMarker, endMarker) => {
+  const start = source.indexOf(startMarker);
+  assert.ok(start >= 0, `missing source marker: ${startMarker}`);
+  const end = endMarker ? source.indexOf(endMarker, start + startMarker.length) : source.length;
+  assert.ok(end >= 0, `missing source marker: ${endMarker}`);
+  return source.slice(start, end);
+};
+
 it("keeps package and userscript release versions aligned", async () => {
   const [packageSource, header, userscript] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -155,6 +165,51 @@ describe("Warbuddy action queue", () => {
     assert.deepEqual(core.buildActionQueue({ enemies: [], alliedScore: { chain: 2 } }), []);
   });
 
+  it("omits generic online suggestions when own BSP is unavailable without hiding priority actions", () => {
+    const nowMs = 2_000_000_000_000;
+    const items = core.buildActionQueue({
+      nowMs,
+      ownBsp: 0,
+      watchedEnemyMemberIds: [201],
+      alliedScore: {
+        chain: 27,
+        chain_timer: new Date(nowMs + 90_000).toISOString(),
+      },
+      enemies: [
+        {
+          member_id: 201,
+          member_name: "Watched",
+          bsp: 9_000_000_000,
+          activity: "Offline",
+          status: { userStatus: "Okay" },
+          location: { current: "Torn" },
+        },
+        {
+          member_id: 202,
+          member_name: "Hospital",
+          bsp: 8_000_000_000,
+          activity: "Offline",
+          status: { userStatus: "Hospital", untill: nowMs + 5 * 60_000 },
+          location: { current: "Torn" },
+        },
+        {
+          member_id: 203,
+          member_name: "Generic online",
+          bsp: 100,
+          activity: "Online",
+          status: { userStatus: "Okay" },
+          location: { current: "Torn" },
+        },
+      ],
+    });
+
+    assert.deepEqual(items.map((item) => item.key), [
+      "chain-risk",
+      "watched-ready-201",
+      "hospital-202",
+    ]);
+  });
+
   it("pins watched targets near landing, near hospital release, and while attackable", () => {
     const nowMs = 2_000_000_000_000;
     const enemies = [
@@ -273,12 +328,56 @@ describe("Warbuddy live state", () => {
     assert.equal(result.version, 4);
   });
 
+  it("requests a snapshot when the first roster message is a delta with a base version", () => {
+    const result = core.applyRosterUpdate(undefined, {
+      baseVersion: 4,
+      version: 5,
+      changedMembers: [{ member_id: 2, member_name: "Partial member" }],
+    });
+
+    assert.equal(result.needsSnapshot, true);
+    assert.equal(result.version, 0);
+    assert.deepEqual(result.members, []);
+  });
+
+  it("keeps waiting for a full snapshot after a roster version gap", () => {
+    const missing = core.applyRosterUpdate({ version: 4, members: [{ member_id: 1 }] }, {
+      baseVersion: 5,
+      version: 6,
+      changedMembers: [{ member_id: 2 }],
+    });
+    const laterDelta = core.applyRosterUpdate(missing, {
+      baseVersion: 4,
+      version: 7,
+      changedMembers: [{ member_id: 3 }],
+    });
+    const emptyDelta = core.applyRosterUpdate(missing, { baseVersion: 6, version: 7 });
+
+    assert.equal(laterDelta.needsSnapshot, true);
+    assert.equal(emptyDelta.needsSnapshot, true);
+    assert.deepEqual(laterDelta.members, [{ member_id: 1 }]);
+  });
+
   it("prefers the score's explicit opponent over extra tracked rosters", () => {
     const scores = new Map([
-      ["41309", { factionId: "41309", opponentFactionId: "49352" }],
+      ["41309", { factionId: "41309", opponentFactionId: "49352", start: "2026-08-23T12:00:00.000Z" }],
     ]);
     const rosters = new Map([["41309", {}], ["41067", {}], ["49352", {}]]);
     assert.equal(core.inferEnemyFactionId("41309", scores, rosters), "49352");
+  });
+
+  it("uses the only enemy roster before an own score snapshot arrives", () => {
+    const rosters = new Map([["41309", {}], ["49352", {}]]);
+    assert.equal(core.inferEnemyFactionId("41309", new Map(), rosters), "49352");
+  });
+
+  it("does not infer an opponent after the own score says the war has ended", () => {
+    const scores = new Map([
+      ["41309", { factionId: "41309", opponentFactionId: "49352", start: "" }],
+      ["49352", { factionId: "49352", opponentFactionId: "41309", start: "" }],
+    ]);
+    const rosters = new Map([["41309", {}], ["49352", {}]]);
+    assert.equal(core.inferEnemyFactionId("41309", scores, rosters), "");
   });
 
   it("drops expired retaliation opportunities", () => {
@@ -350,7 +449,7 @@ describe("Warbuddy live state", () => {
 
     assert.ok(source.includes(".wc-link.dibs-taken { border-color:#a1a1aa; background:#52525b;"));
     assert.ok(source.includes('data-dibs-state="${presentation.state}" href="${escapeHtml(url)}"'));
-    assert.ok(source.includes("dibsMarkup(member, view, claim)"));
+    assert.ok(source.includes('dibsMarkup(member, view, claim, `action-${item.key}`)'));
     assert.ok(source.includes('attackLinkMarkup(item.url, memberId, item.actionLabel || "Open", view, item.severity === "urgent", claim)'));
   });
 
@@ -375,11 +474,12 @@ describe("Warbuddy live state", () => {
 describe("Warbuddy panel state", () => {
   it("preserves disclosures and independent scroll positions across live renders", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey()"));
 
     assert.ok(source.includes("privacyOpen: false"));
     assert.ok(source.includes('if (privacyDisclosure) state.privacyOpen = privacyDisclosure.open'));
     assert.ok(source.includes('data-section="privacy"${state.privacyOpen ? " open" : ""}'));
-    assert.ok(source.includes("if (nextBody) nextBody.scrollTop = bodyScrollTop"));
+    assert.ok(renderSource.includes("nextBody.scrollTop = bodyScrollTop"));
     assert.ok(source.includes("targetListScrollTop: 0"));
     assert.ok(source.includes("state.targetListScrollTop = Number(currentTargetList.scrollTop || 0)"));
     assert.ok(source.includes("nextTargetList.scrollTop = state.targetListScrollTop"));
@@ -392,7 +492,7 @@ describe("Warbuddy panel state", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     assert.ok(source.includes('class="wc-input wc-secret-input"'));
-    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.30"'));
+    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.31"'));
     assert.ok(source.includes('if (!core.dibsFeatureEnabled(state.settings)) return ""'));
     assert.ok(source.includes('type="text"'));
     assert.ok(source.includes('autocomplete="one-time-code"'));
@@ -428,6 +528,48 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes("cancelAnimationFrame(state.renderFrame)"));
   });
 
+  it("verifies a candidate API key before replacing the stored key", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const connectSource = sourceSection(
+      source,
+      "async function connectFromInput",
+      "function cancelScheduledRender"
+    );
+
+    const verificationAt = connectSource.indexOf("await requestCompanionSession(key)");
+    const invalidationAt = connectSource.indexOf("invalidateAuthentication()", verificationAt);
+    const storageAt = connectSource.indexOf("storage.set(KEY_STORAGE, key)");
+    assert.ok(verificationAt >= 0, "candidate key must request a scoped companion session");
+    assert.ok(invalidationAt > verificationAt, "verified replacement must invalidate older authentication work");
+    assert.ok(storageAt > verificationAt, "candidate key must not be persisted until verification succeeds");
+    assert.ok(storageAt > invalidationAt, "older authentication work must be invalidated before key replacement");
+    assert.match(compactSource(connectSource), /const previousKey = getStoredKey\(\)/);
+  });
+
+  it("stops reconnect loops on terminal authentication errors and exposes key replacement", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const authenticateSource = compactSource(sourceSection(
+      source,
+      "async function authenticate",
+      "function recordScriptCheckIn"
+    ));
+    const reconnectSource = compactSource(sourceSection(
+      source,
+      "function scheduleReconnect",
+      "function startTicker"
+    ));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(authenticateSource, /state\.authTerminal = isTerminalAuthenticationError\(error\)/);
+    assert.match(authenticateSource, /if \(state\.authTerminal\) state\.keyEditorOpen = true/);
+    assert.match(reconnectSource, /if \(!isForeground\(\) \|\| state\.reconnectTimer \|\| state\.authTerminal\) return/);
+    assert.match(reconnectSource, /if \(!isForeground\(\) \|\| !getStoredKey\(\) \|\| state\.authTerminal\) return/);
+    assert.match(reconnectSource, /if \(!state\.authTerminal\) scheduleReconnect\(\)/);
+    assert.match(renderSource, /const showKeyEditor = !savedKey \|\| state\.keyEditorOpen \|\| state\.authTerminal/);
+    assert.match(renderSource, /savedKey \? "Replacement Torn API key" : "Torn API key"/);
+    assert.match(renderSource, /savedKey \? "Replace" : "Connect"/);
+  });
+
   it("does not replace an API key while the player is entering it", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
@@ -454,11 +596,13 @@ describe("Warbuddy panel state", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     const privacyAt = source.indexOf('<details data-section="privacy"');
-    const reconnectAt = source.indexOf('data-action="refresh">Reconnect');
-    const forgetAt = source.indexOf('data-action="forget">Forget key');
+    const privacyEnd = source.indexOf("</details>", privacyAt);
+    const reconnectAt = source.indexOf('data-action="refresh"', privacyAt);
+    const changeKeyAt = source.indexOf('data-action="change-key"', privacyAt);
+    const forgetAt = source.indexOf('data-action="forget"', privacyAt);
     assert.ok(privacyAt > 0);
-    assert.ok(reconnectAt > privacyAt);
-    assert.ok(forgetAt > reconnectAt);
+    assert.ok(privacyAt < reconnectAt && reconnectAt < changeKeyAt && changeKeyAt < forgetAt);
+    assert.ok(forgetAt < privacyEnd);
     assert.doesNotMatch(source, /data-action="refresh">Refresh/);
   });
 
@@ -472,16 +616,30 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('data: JSON.stringify({ scriptVersion: SCRIPT_VERSION, transport })'));
     assert.ok(source.includes('if (state.phase === "connected") void recordScriptCheckIn("websocket")'));
     assert.ok(source.includes('if (state.phase === "fallback") void recordScriptCheckIn("compatible")'));
+    assert.ok(source.includes("authEpoch !== state.authEpoch"));
+    assert.ok(source.includes("state.checkInPromise === checkInPromise"));
     assert.doesNotMatch(source, /api\.torn\.com[^\n]*check-in/i);
   });
 
   it("lets the verified player manage only their personal watched targets", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const persistSource = compactSource(sourceSection(
+      source,
+      "async function persistWatchedTargetIds",
+      "async function saveWatchedTargets"
+    ));
+    const saveSource = compactSource(sourceSection(
+      source,
+      "async function saveWatchedTargets",
+      "async function toggleWatchedTarget"
+    ));
 
     assert.ok(source.includes('data-section="targets"'));
     assert.ok(source.includes('data-action="save-targets"'));
     assert.ok(source.includes('/war-companion/watched-targets'));
-    assert.ok(source.includes('JSON.stringify({ memberIds: normalizeTargetIds(state.targetDraft) })'));
+    assert.match(persistSource, /const memberIds = normalizeTargetIds\(value\)/);
+    assert.match(persistSource, /data: JSON\.stringify\(\{ memberIds \}\)/);
+    assert.match(saveSource, /await persistWatchedTargetIds\(state\.targetDraft\)/);
     assert.ok(source.includes('save only your watched-target list'));
     assert.doesNotMatch(source, /faction-configured watched/i);
     assert.doesNotMatch(source, /Personal targets pinned near landing/i);
@@ -490,6 +648,11 @@ describe("Warbuddy panel state", () => {
 
   it("shares Dibs through the scoped companion session without extra Torn calls", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const tipPositionSource = compactSource(sourceSection(
+      source,
+      "function positionOpenDibsTip",
+      "function render()"
+    ));
 
     assert.ok(source.includes('"war_dibs"'));
     assert.ok(source.includes('/war-companion/dibs'));
@@ -497,8 +660,11 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('data-dibs-action="claim"') || source.includes('const action = claim ? "inspect" : "claim"'));
     assert.ok(source.includes('data-dibs-action="release"'));
     assert.ok(source.includes("wc-action-section .wc-dibs-tip"));
-    assert.ok(source.includes("top:calc(100% + 4px); bottom:auto"));
-    assert.ok(source.includes('width:16px; height:16px'));
+    assert.match(source, /\.wc-dibs-tip\s*\{[^}]*position:\s*fixed/);
+    assert.match(tipPositionSource, /const viewport = window\.visualViewport/);
+    assert.match(tipPositionSource, /tip\.style\.left =/);
+    assert.match(tipPositionSource, /tip\.style\.top =/);
+    assert.match(source, /\.wc-dibs\s*\{[^}]*width:\s*16px;\s*height:\s*16px/);
     assert.doesNotMatch(source, /api\.torn\.com[^\n]*dibs/i);
   });
 
@@ -592,16 +758,200 @@ describe("Warbuddy panel state", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     assert.ok(source.includes('socket.addEventListener("close", (event) => {\n        if (socket !== state.socket) return;'));
+    assert.ok(source.includes('socket.addEventListener("message", (event) => {\n        if (socket !== state.socket) return;'));
     assert.doesNotMatch(source, /socketClosing/);
   });
 
   it("pauses all live work while the panel is collapsed", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const statusSource = compactSource(sourceSection(source, "const statusView", "function dibsMarkup"));
 
     assert.ok(source.includes("const isForeground = () => state.active\n    && !state.collapsed"));
     assert.ok(source.includes('title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}"'));
     assert.ok(source.includes('storage.set(COLLAPSED_STORAGE, state.collapsed ? "1" : "0");\n      syncForegroundState();'));
-    assert.ok(source.includes('state.collapsed ? "Paused" : "Paused while hidden"'));
+    assert.match(statusSource, /if \(state\.collapsed\) return \{ label: "Paused", tone: "" \}/);
+    assert.match(statusSource, /if \(document\.visibilityState === "hidden"\) return \{ label: "Paused while hidden", tone: "" \}/);
+  });
+});
+
+describe("Warbuddy userscript source contracts", () => {
+  it("hides the whole action queue via showActionQueue while keeping the tracker-disabled notice separate", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const sessionViewSource = compactSource(sourceSection(source, "function sessionView", "const statusView"));
+    const queueMarkupSource = compactSource(sourceSection(
+      source,
+      "function actionQueueMarkup",
+      "function attackTargetMarkup"
+    ));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(sessionViewSource, /const actionQueueEnabled = state\.settings\?\.enabled !== false && state\.settings\?\.showActionQueue !== false/);
+    assert.match(sessionViewSource, /const actions = !actionQueueEnabled \? \[\] : core\.buildActionQueue\(/);
+    assert.match(queueMarkupSource, /if \(trackerDisabled\) return ""/);
+    assert.match(queueMarkupSource, /if \(!view\.actionQueueEnabled\) return ""/);
+    assert.match(renderSource, /const trackerDisabled = state\.settings\?\.enabled === false/);
+    assert.match(renderSource, /const trackerDisabledNotice = trackerDisabled \? .*War tracker is disabled\..* : ""/);
+    assert.ok(renderSource.includes("${trackerDisabledNotice}${queueSection}"));
+    assert.equal(core.dibsFeatureEnabled({ enabled: true, dibsEnabled: true, showActionQueue: false }), true);
+  });
+
+  it("uses the attack-page target for a current-target card with quick watch and Dibs", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const activationSource = compactSource(sourceSection(
+      source,
+      "function syncPageActivation",
+      "function syncVisibilityState"
+    ));
+    const attackCardSource = compactSource(sourceSection(
+      source,
+      "function attackTargetMarkup",
+      "function capturePanelFocus"
+    ));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(activationSource, /const nextAttackTargetId = active \? core\.attackPageTargetId\(window\.location\.href\) : 0/);
+    assert.match(attackCardSource, /if \(!state\.attackTargetId\) return ""/);
+    assert.match(attackCardSource, /Current Torn target/);
+    assert.match(attackCardSource, /member \? dibsMarkup\(member, view, claim, `attack-\$\{memberId\}`\) : ""/);
+    assert.match(attackCardSource, /data-action="toggle-watch"/);
+    assert.match(attackCardSource, /data-target-member="\$\{memberId\}"/);
+    assert.match(renderSource, /toggleWatchedTarget\(event\.currentTarget\?\.dataset\?\.targetMember\)/);
+  });
+
+  it("keeps watched-target options stable, searchable, filterable, and explicitly actionable", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const optionsSource = compactSource(sourceSection(
+      source,
+      "function watchedTargetOptions",
+      "function filteredWatchedTargetOptions"
+    ));
+    const filterSource = compactSource(sourceSection(
+      source,
+      "function filteredWatchedTargetOptions",
+      "async function persistWatchedTargetIds"
+    ));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(optionsSource, /for \(const memberId of selectedIds\)/);
+    assert.match(optionsSource, /\.sort\(\(left, right\) => left\.name\.localeCompare\(right\.name\) \|\| left\.memberId - right\.memberId\)/);
+    assert.match(filterSource, /const query = state\.targetSearch\.trim\(\)\.toLowerCase\(\)/);
+    assert.match(filterSource, /`\$\{option\.name\} \$\{option\.memberId\}`\.toLowerCase\(\)\.includes\(query\)/);
+    for (const filter of ["selected", "attackable", "hospital", "traveling"]) {
+      assert.match(filterSource, new RegExp(`state\\.targetFilter === "${filter}"`));
+    }
+    assert.match(renderSource, /data-field="target-search"/);
+    assert.match(renderSource, /data-field="target-filter"/);
+    assert.match(renderSource, /data-action="clear-targets"[^>]*>Clear<\/button>/);
+    assert.match(renderSource, /data-action="cancel-targets"[^>]*>Cancel<\/button>/);
+    assert.match(renderSource, /data-action="save-targets"[^>]*>\$\{state\.targetsSaving \? "Saving\.\.\." : "Save"\}<\/button>/);
+  });
+
+  it("preserves dirty target drafts and restores picker focus across renders", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const draftSource = compactSource(sourceSection(source, "const syncTargetDraft", "const resetPersonalTargets"));
+    const quickWatchSource = compactSource(sourceSection(
+      source,
+      "async function toggleWatchedTarget",
+      "function showDibsError"
+    ));
+    const focusSource = compactSource(sourceSection(
+      source,
+      "function capturePanelFocus",
+      "function positionOpenDibsTip"
+    ));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(draftSource, /if \(state\.targetsDirty && !sameTargetIds\(state\.targetDraft, savedTargetIds\(\)\)\) return/);
+    assert.match(renderSource, /const targetIds = state\.targetsOpen \|\| state\.targetsDirty \? normalizeTargetIds\(state\.targetDraft\) : savedTargetIds\(\)/);
+    assert.match(renderSource, /if \(open && !state\.targetsDirty\) state\.targetDraft = savedTargetIds\(\)/);
+    assert.match(quickWatchSource, /if \(state\.targetsOpen \|\| state\.targetsDirty\)/);
+    assert.match(quickWatchSource, /state\.targetsDirty = !sameTargetIds\(state\.targetDraft, savedIds\)/);
+    assert.match(focusSource, /focusKey/);
+    assert.match(focusSource, /candidate\.focus\?\.\(\{ preventScroll: true \}\)/);
+    assert.match(focusSource, /candidate\.setSelectionRange\(snapshot\.selectionStart, snapshot\.selectionEnd\)/);
+    assert.match(renderSource, /prepareSameKeyReconnect\(\)/);
+
+    const captureAt = renderSource.indexOf("const focusSnapshot = capturePanelFocus(panel)");
+    const replaceAt = renderSource.indexOf("panel.innerHTML =");
+    const restoreAt = renderSource.indexOf("restorePanelFocus(panel, focusSnapshot)");
+    assert.ok(captureAt >= 0 && captureAt < replaceAt && replaceAt < restoreAt);
+  });
+
+  it("blocks stale or offline mutations and removes only generic online suggestions", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const sessionViewSource = compactSource(sourceSection(source, "function sessionView", "const statusView"));
+    const dibsMarkupSource = compactSource(sourceSection(source, "function dibsMarkup", "function attackLinkMarkup"));
+    const saveTargetsSource = compactSource(sourceSection(
+      source,
+      "async function saveWatchedTargets",
+      "async function toggleWatchedTarget"
+    ));
+    const quickWatchSource = compactSource(sourceSection(
+      source,
+      "async function toggleWatchedTarget",
+      "function showDibsError"
+    ));
+    const updateDibsSource = compactSource(sourceSection(
+      source,
+      "async function updateDibs",
+      "function actionQueueMarkup"
+    ));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(sessionViewSource, /const genericSuggestionsEnabled = rosterIsFresh\(ownFactionId\) && rosterIsFresh\(enemyFactionId\)/);
+    assert.match(sessionViewSource, /\.filter\(\(item\) => genericSuggestionsEnabled \|\| !String\(item\.key \|\| ""\)\.startsWith\("online-"\)\)/);
+    assert.match(dibsMarkupSource, /const canMutate = rosterIsFresh\(view\.enemyFactionId\) && !state\.authTerminal && !state\.keySaving/);
+    assert.match(saveTargetsSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
+    assert.match(quickWatchSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
+    assert.match(updateDibsSource, /if \(!currentEnemyRosterIsFresh\(\) \|\| state\.keySaving\)/);
+    assert.match(source, /state\.rosterDataAt\.delete\(factionId\)/);
+    assert.match(source, /state\.rosterDataAt\.set\(factionId, Date\.now\(\)\)/);
+    assert.match(renderSource, /data-action="save-targets"[^>]*!isOnline\(\)[^>]*state\.authTerminal[^>]*state\.keySaving/);
+    assert.match(renderSource, /Target data is syncing or stale\. Generic online suggestions and Dibs actions are paused\./);
+  });
+
+  it("globally locks Dibs during a mutation and offers Dibs on retaliation rows", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const dibsMarkupSource = compactSource(sourceSection(source, "function dibsMarkup", "function attackLinkMarkup"));
+    const retaliationSource = compactSource(sourceSection(
+      source,
+      "function retaliationMarkup",
+      "function watchedTargetOptions"
+    ));
+    const updateDibsSource = compactSource(sourceSection(
+      source,
+      "async function updateDibs",
+      "function actionQueueMarkup"
+    ));
+
+    assert.match(dibsMarkupSource, /const anyBusy = state\.dibsBusyTargetId > 0/);
+    assert.match(dibsMarkupSource, /const disabled = anyBusy \|\| \(!claim && !canMutate\)/);
+    assert.match(dibsMarkupSource, /!canMutate \|\| anyBusy \? " disabled" : ""/);
+    assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
+    assert.match(updateDibsSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);
+    assert.match(updateDibsSource, /if \(!expectsSocketSnapshot\) applyDibsSnapshot\(response\)/);
+    assert.match(updateDibsSource, /if \(resumeFallback\) stopFallbackPolling\(\)/);
+    assert.match(updateDibsSource, /if \(resumeFallback && !socketIsOpen\(\)\) startFallbackPolling\(\)/);
+    assert.match(updateDibsSource, /finally \{ state\.dibsBusyTargetId = 0/);
+    assert.match(retaliationSource, /view\.enemyRoster\.find/);
+    assert.match(retaliationSource, /member \? dibsMarkup\(member, view, claim, `retal-\$\{memberId\}-\$\{attack\.expiresAt\}`\) : ""/);
+    assert.match(retaliationSource, /attackLinkMarkup\(attack\.attackUrl \|\| core\.attackUrl\(attack\.attackerId\), memberId, "Attack", view, true, claim\)/);
+  });
+
+  it("provides viewport-safe mobile layout and 40px coarse-pointer controls", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const styleSource = sourceSection(source, "addStyle(`", "const normalizeResponse");
+    const coarseMarker = /@media\s*\(pointer:\s*coarse\)/.exec(styleSource);
+
+    assert.match(styleSource, /@media\s*\(max-width:\s*520px\)/);
+    assert.match(styleSource, /safe-area-inset-right/);
+    assert.match(styleSource, /max-height:\s*58dvh/);
+    assert.ok(coarseMarker, "missing coarse-pointer media query");
+    const coarseSource = styleSource.slice(coarseMarker.index);
+    assert.match(coarseSource, /\.wc-button,[\s\S]*?\.wc-link\s*\{[^}]*min-height:\s*40px/);
+    assert.match(coarseSource, /\.wc-icon\s*\{[^}]*width:\s*40px/);
+    assert.match(coarseSource, /\.wc-dibs,[\s\S]*?\.wc-dibs-close\s*\{[^}]*width:\s*40px;\s*height:\s*40px/);
+    assert.match(coarseSource, /summary\s*\{[^}]*min-height:\s*40px/);
   });
 });
 

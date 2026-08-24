@@ -1,10 +1,12 @@
 # Warbuddy
 
-## 0.1.30
+## 0.1.31
 
-- Uses Torn PDA's native HTTP bridge before userscript compatibility shims.
-- Reduces background rendering and DOM observation while preserving two-second live snapshots.
-- Backs failed compatible-mode refreshes off to a maximum of ten seconds.
+- Adds a target-first attack-page card with one-tap Watch/Unwatch and shared Dibs.
+- Makes the watched-target picker searchable and filterable, with explicit Save, Cancel, and Clear actions.
+- Verifies replacement keys before saving them and stops automatic retries when a key needs attention.
+- Hides the Action Queue when the faction switch is off while keeping retaliation, watched targets, and Dibs available.
+- Pauses unsafe live actions on stale/offline data and improves touch targets, collapse behavior, and popup positioning.
 
 Warbuddy is a Torn userscript for the live war action queue and retaliation opportunities supplied by the Grusmedia backend.
 
@@ -22,8 +24,10 @@ The install URL ends in `.user.js` and includes update metadata, so supported us
 - Current chain-risk and hospital-exit opportunities from the faction War Tracker.
 - Online enemy targets when they are relevant to the action queue.
 - Personal watched enemies within one minute of landing or leaving hospital, and while attackable in Torn.
+- A searchable, filterable personal-target picker with drafts that stay intact until Save or Cancel.
 - A compact shared Dibs marker for attackable enemies and enemies leaving hospital within five minutes.
 - Active retaliation windows with explicit links to Torn.
+- A current-target card on Torn attack pages, with Watch/Unwatch and Dibs beside the target.
 - A stable empty state when there are no immediate actions.
 
 Warbuddy displays information and links only. It never attacks, clicks, submits Torn actions, or notifies automatically. **Dibs** is an explicit coordination button that updates only the Grusmedia backend.
@@ -33,6 +37,7 @@ Warbuddy displays information and links only. It never attacks, clicks, submits 
 - The Torn API key is stored locally by the userscript manager.
 - The key is used to identify the player and faction, then exchanged for a six-hour, faction-scoped companion session.
 - The key is not saved to the backend during that exchange.
+- New and replacement keys are verified before they replace the locally stored working key.
 - Warbuddy connects only while its panel is expanded on a visible Torn faction tab and the device is online.
 - Its backend session can read War Tracker settings, rosters, score, retaliation, and shared Dibs for the verified faction. It can save only that player's watched-target list and Dibs actions.
 - Other players' watched-target lists are never returned to the script.
@@ -60,6 +65,18 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.31 - 24 August 2026
+
+- Adds a compact current-target card on Torn attack pages with immediate Watch/Unwatch and shared Dibs controls; the general queue stays available behind a disclosure.
+- Adds name/ID search plus All, Selected, Attackable, Hospital, and Traveling filters to the watched-target picker.
+- Preserves unsaved target edits across live renders and disclosure closes, restores field focus, keeps stable alphabetical ordering, and adds explicit Clear and Cancel actions.
+- Validates a new or replacement Torn key before writing it to userscript storage, retains a working old key when replacement fails, and stops retry loops for terminal authentication failures.
+- Honors the faction's Action Queue visibility setting without hiding retaliation, personal watched targets, or other companion features.
+- Detects stale/offline live data, suppresses generic online suggestions when own BSP is unknown, and blocks Dibs mutations until the connection is fresh.
+- Requests a full roster snapshot when the first received delta has an unmatched base version and clears the previous enemy when the stored score says the war ended.
+- Adds Dibs to retaliation rows, globally locks Dibs controls during an update, labels release as **Release & unwatch**, and positions its detail popup inside the visible viewport.
+- Adds a target quick-save path, a two-step Forget key confirmation, a Change key menu command, larger coarse-pointer controls, safe-area-aware sizing, and a compact collapsed pill.
 
 ### 0.1.30 - 22 August 2026
 
