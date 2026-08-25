@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.31
+// @version      0.1.32
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -351,6 +351,23 @@
       .filter((attack) => Number(attack?.expiresAt || 0) > nowSeconds && Number(attack?.attackerId || 0) > 0)
       .sort((a, b) => Number(a.expiresAt || 0) - Number(b.expiresAt || 0));
 
+  const fallbackPollDelayMs = ({
+    baseMs = 2_000,
+    maxMs = 10_000,
+    failureCount = 0,
+    unchangedCount = 0,
+    urgent = false,
+    activeWar = false,
+  } = {}) => {
+    const base = Math.max(250, Number(baseMs) || 2_000);
+    const maximum = Math.max(base, Number(maxMs) || 10_000);
+    if (Number(failureCount) > 0) {
+      return Math.min(maximum, base * (2 ** Math.min(Number(failureCount), 3)));
+    }
+    if (urgent || Number(unchangedCount) < 3) return base;
+    return activeWar ? Math.min(maximum, 5_000) : maximum;
+  };
+
   return {
     activeDibsClaim,
     activeRetaliations,
@@ -362,6 +379,7 @@
     dibsEligibility,
     dibsFeatureEnabled,
     duration,
+    fallbackPollDelayMs,
     formatBsp,
     inferEnemyFactionId,
     isFactionPageUrl,
@@ -378,7 +396,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.31";
+  const SCRIPT_VERSION = "0.1.32";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -439,6 +457,8 @@
     fallbackActive: false,
     fallbackGeneration: 0,
     fallbackFailureCount: 0,
+    fallbackRevision: "",
+    fallbackUnchangedCount: 0,
     lastFallbackAt: "",
     lastFallbackError: "",
     lastLiveDataAt: 0,
@@ -740,6 +760,8 @@
     state.dibsError = "";
     state.dibsErrorTargetId = 0;
     state.lastLiveDataAt = 0;
+    state.fallbackRevision = "";
+    state.fallbackUnchangedCount = 0;
     state.rosterDataAt.clear();
     state.targetQuickError = "";
     resetPersonalTargets();
@@ -760,7 +782,7 @@
   const socketUrl = () => `${BACKEND_BASE_URL.replace(/^http/i, "ws").replace(/\/$/, "")}/ws`;
   const fallbackIsFresh = () => state.fallbackActive
     && Number.isFinite(Date.parse(state.lastFallbackAt))
-    && Date.parse(state.lastFallbackAt) > Date.now() - (FALLBACK_POLL_MS * 3);
+    && Date.parse(state.lastFallbackAt) > Date.now() - (FALLBACK_POLL_MAX_MS * 3);
 
   function getStoredPanelPosition() {
     const raw = storage.get(POSITION_STORAGE, "");
@@ -1146,7 +1168,17 @@
     state.scores = scores;
     state.retaliation = snapshot?.retaliation || { attacks: [] };
     applyDibsSnapshot(snapshot?.dibs);
+    state.fallbackRevision = String(snapshot?.revision || "");
+    state.fallbackUnchangedCount = 0;
     scheduleRender();
+  }
+
+  function markFallbackSnapshotUnchanged(snapshot) {
+    if (!snapshot?.unchanged || !state.fallbackRevision || snapshot.revision !== state.fallbackRevision) return false;
+    state.lastLiveDataAt = Date.now();
+    for (const factionId of state.rosters.keys()) state.rosterDataAt.set(factionId, state.lastLiveDataAt);
+    state.fallbackUnchangedCount += 1;
+    return true;
   }
 
   function clearFallbackTimer() {
@@ -1165,10 +1197,15 @@
   function scheduleFallbackPoll() {
     clearFallbackTimer();
     if (!state.fallbackActive || !isForeground()) return;
-    const delay = Math.min(
-      FALLBACK_POLL_MAX_MS,
-      FALLBACK_POLL_MS * (2 ** Math.min(state.fallbackFailureCount, 3)),
-    );
+    const view = sessionView();
+    const delay = core.fallbackPollDelayMs({
+      baseMs: FALLBACK_POLL_MS,
+      maxMs: FALLBACK_POLL_MAX_MS,
+      failureCount: state.fallbackFailureCount,
+      unchangedCount: state.fallbackUnchangedCount,
+      urgent: view.actions.some((item) => item.severity === "urgent") || view.retaliation.length > 0,
+      activeWar: !!view.enemyFactionId,
+    });
     state.fallbackTimer = setTimeout(() => {
       state.fallbackTimer = 0;
       pollFallbackSnapshot();
@@ -1194,15 +1231,18 @@
       }
       const factionId = String(state.session?.factionId || "");
       if (!factionId || !state.token) throw new Error("Companion session is unavailable");
+      const revision = state.fallbackRevision
+        ? `&revision=${encodeURIComponent(state.fallbackRevision)}`
+        : "";
       const snapshot = await requestJson({
         method: "GET",
-        url: backendUrl(`/api/v1/factions/${encodeURIComponent(factionId)}/war-companion/snapshot?timestamp=${Date.now()}`),
+        url: backendUrl(`/api/v1/factions/${encodeURIComponent(factionId)}/war-companion/snapshot?timestamp=${Date.now()}${revision}`),
         headers: { Authorization: `Bearer ${state.token}` },
         label: "Warbuddy snapshot",
       });
       if (generation !== state.fallbackGeneration || !state.fallbackActive || !isForeground()) return;
       state.nowMs = Date.now();
-      applyFallbackSnapshot(snapshot);
+      if (!markFallbackSnapshotUnchanged(snapshot)) applyFallbackSnapshot(snapshot);
       state.phase = "fallback";
       state.error = "";
       state.lastFallbackAt = new Date().toISOString();

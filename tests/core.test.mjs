@@ -492,7 +492,7 @@ describe("Warbuddy panel state", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     assert.ok(source.includes('class="wc-input wc-secret-input"'));
-    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.31"'));
+    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.32"'));
     assert.ok(source.includes('if (!core.dibsFeatureEnabled(state.settings)) return ""'));
     assert.ok(source.includes('type="text"'));
     assert.ok(source.includes('autocomplete="one-time-code"'));
@@ -520,12 +520,23 @@ describe("Warbuddy panel state", () => {
 
     assert.ok(source.includes("const FALLBACK_POLL_MS = 2_000"));
     assert.ok(source.includes("const FALLBACK_POLL_MAX_MS = 10_000"));
-    assert.ok(source.includes("2 ** Math.min(state.fallbackFailureCount, 3)"));
+    assert.ok(source.includes("core.fallbackPollDelayMs({"));
+    assert.ok(source.includes("revision=${encodeURIComponent(state.fallbackRevision)}"));
+    assert.ok(source.includes("markFallbackSnapshotUnchanged(snapshot)"));
     assert.ok(source.includes("if (!isTornPda || !state.fallbackActive) scheduleRender()"));
     assert.ok(source.includes('state.pageObserver.observe(document.body, { childList: true })'));
     assert.ok(!source.includes('state.pageObserver.observe(document.body, { childList: true, subtree: true })'));
     assert.ok(source.includes('document.addEventListener("visibilitychange", syncVisibilityState)'));
     assert.ok(source.includes("cancelAnimationFrame(state.renderFrame)"));
+  });
+
+  it("keeps urgent fallback polling fast and backs off quiet snapshots", () => {
+    assert.equal(core.fallbackPollDelayMs({ urgent: true, unchangedCount: 20 }), 2_000);
+    assert.equal(core.fallbackPollDelayMs({ activeWar: true, unchangedCount: 2 }), 2_000);
+    assert.equal(core.fallbackPollDelayMs({ activeWar: true, unchangedCount: 3 }), 5_000);
+    assert.equal(core.fallbackPollDelayMs({ activeWar: false, unchangedCount: 3 }), 10_000);
+    assert.equal(core.fallbackPollDelayMs({ failureCount: 1 }), 4_000);
+    assert.equal(core.fallbackPollDelayMs({ failureCount: 4 }), 10_000);
   });
 
   it("verifies a candidate API key before replacing the stored key", async () => {

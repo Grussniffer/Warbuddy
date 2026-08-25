@@ -324,6 +324,23 @@
       .filter((attack) => Number(attack?.expiresAt || 0) > nowSeconds && Number(attack?.attackerId || 0) > 0)
       .sort((a, b) => Number(a.expiresAt || 0) - Number(b.expiresAt || 0));
 
+  const fallbackPollDelayMs = ({
+    baseMs = 2_000,
+    maxMs = 10_000,
+    failureCount = 0,
+    unchangedCount = 0,
+    urgent = false,
+    activeWar = false,
+  } = {}) => {
+    const base = Math.max(250, Number(baseMs) || 2_000);
+    const maximum = Math.max(base, Number(maxMs) || 10_000);
+    if (Number(failureCount) > 0) {
+      return Math.min(maximum, base * (2 ** Math.min(Number(failureCount), 3)));
+    }
+    if (urgent || Number(unchangedCount) < 3) return base;
+    return activeWar ? Math.min(maximum, 5_000) : maximum;
+  };
+
   return {
     activeDibsClaim,
     activeRetaliations,
@@ -335,6 +352,7 @@
     dibsEligibility,
     dibsFeatureEnabled,
     duration,
+    fallbackPollDelayMs,
     formatBsp,
     inferEnemyFactionId,
     isFactionPageUrl,
