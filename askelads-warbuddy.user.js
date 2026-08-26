@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.37
+// @version      0.1.38
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -571,7 +571,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.37";
+  const SCRIPT_VERSION = "0.1.38";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -1211,15 +1211,18 @@
     if (preservePanel && panel && host?.contains?.(panel) && document.body) document.body.appendChild(panel);
     if (wrapper) wrapper.remove();
     else host?.remove();
+    document.querySelectorAll?.("[data-warbuddy-roster-board]").forEach((board) => {
+      delete board.dataset.warbuddyRosterBoard;
+    });
   }
 
-  function rosterProfileAnchors(roster) {
+  function rosterProfileAnchors(roster, root = document) {
     const memberIds = new Set((Array.isArray(roster) ? roster : [])
       .map((member) => Number(member?.member_id || 0))
       .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
     if (!memberIds.size) return [];
     const seen = new Set();
-    return Array.from(document.querySelectorAll?.("a[href*='profiles.php']") || []).filter((anchor) => {
+    return Array.from(root?.querySelectorAll?.("a[href*='profiles.php']") || []).filter((anchor) => {
       if (anchor.closest?.(`#${PANEL_ID}, #${INTEGRATED_HOST_ID}, .${INLINE_TOOLS_CLASS}`)) return false;
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
       if (!memberIds.has(memberId) || seen.has(memberId)) return false;
@@ -1314,6 +1317,11 @@
     const board = rankedWarBoardForView(view);
     const parent = board?.parentNode;
     if (!board || !parent) return null;
+
+    document.querySelectorAll?.("[data-warbuddy-roster-board]").forEach((candidate) => {
+      delete candidate.dataset.warbuddyRosterBoard;
+    });
+    board.dataset.warbuddyRosterBoard = "1";
 
     const wrapper = document.createElement("div");
     wrapper.id = INTEGRATED_WRAPPER_ID;
@@ -2106,8 +2114,12 @@
     const keepRows = new Set();
     const keepAttackLinks = new Set();
     const decoratedRows = [];
+    const board = document.querySelector?.("[data-warbuddy-roster-board='1']");
+    const enemyAnchors = board?.isConnected
+      ? rosterProfileAnchors(view.enemyRoster, board)
+      : enemyProfileAnchors(view);
 
-    for (const anchor of enemyProfileAnchors(view)) {
+    for (const anchor of enemyAnchors) {
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
       const member = members.get(memberId);
       if (!member) continue;
@@ -2151,7 +2163,9 @@
       const retaliationLabel = retaliation
         ? `Retaliation - ${core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)} left`
         : "";
-      const row = rankedWarRowForAnchor(anchor);
+      const row = board?.contains?.(anchor)
+        ? rankedWarOwnRowForAnchor(anchor)
+        : rankedWarRowForAnchor(anchor);
       const actionable = actionableIds.has(memberId) || !!retaliation;
       const flags = {
         watched,
@@ -2830,7 +2844,7 @@
     const rosterFilterOptions = [
       ["all", "All"],
       ["watched", "Watched"],
-      ["actionable", "Actionable"],
+      ["actionable", "Queue"],
       ["retaliations", "Retals"],
     ].map(([value, label]) => `<button type="button" class="wc-roster-filter${state.rosterFilter === value ? " active" : ""}" data-roster-filter="${value}" aria-pressed="${state.rosterFilter === value ? "true" : "false"}">${label}</button>`).join("");
     const rosterControls = rosterMode
@@ -2897,7 +2911,7 @@
       <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel ? `<div class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</div>` : ""}</div>
       <button class="wc-button wc-icon" data-action="collapse" aria-expanded="${state.collapsed ? "false" : "true"}" aria-label="${state.collapsed ? "Expand and resume Warbuddy" : "Collapse and pause Warbuddy"}" title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}">${state.collapsed ? "+" : "-"}</button>
     </div>`;
-    const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts"><span>Watched ${savedTargetIds().length}</span><span>Ready ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
+    const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts"><span>Watched ${savedTargetIds().length}</span><span>Queue ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
     panel.innerHTML = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
 
     const nextBody = panel.querySelector(".wc-body");

@@ -913,6 +913,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(rowSource, /lowestCommonAncestor\(ownRow, enemyRow\)/);
     assert.match(rowSource, /board\.contains\?\.\(ownRow\)/);
     assert.match(rowSource, /board\.contains\?\.\(enemyRow\)/);
+    assert.match(rowSource, /board\.dataset\.warbuddyRosterBoard = "1"/);
     assert.match(rowSource, /parent\.insertBefore\(wrapper, board\)/);
     assert.doesNotMatch(rowSource, /parent\.insertBefore\(wrapper, row\)/);
     assert.match(styleSource, /grid-column:1 \/ -1 !important/);
@@ -927,7 +928,10 @@ describe("Warbuddy userscript source contracts", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
     const cleanupSource = compactSource(sourceSection(source, "function removeInlineMemberTools", "function removeIntegratedMount"));
+    const mountCleanupSource = compactSource(sourceSection(source, "function removeIntegratedMount", "function rosterProfileAnchors"));
 
+    assert.match(inlineSource, /rosterProfileAnchors\(view\.enemyRoster, board\)/);
+    assert.match(inlineSource, /board\?\.contains\?\.\(anchor\) \? rankedWarOwnRowForAnchor\(anchor\) : rankedWarRowForAnchor\(anchor\)/);
     assert.match(inlineSource, /core\.rosterFilterMatches\(state\.rosterFilter, flags\)/);
     assert.match(inlineSource, /core\.rosterPriority\(flags\)/);
     assert.match(inlineSource, /row\.style\.order = String/);
@@ -935,6 +939,8 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(cleanupSource, /warbuddy-roster-hidden/);
     assert.match(cleanupSource, /removeProperty\?\.\("order"\)/);
     assert.match(cleanupSource, /warbuddy-roster-sort-parent/);
+    assert.match(mountCleanupSource, /\[data-warbuddy-roster-board\]/);
+    assert.match(mountCleanupSource, /delete board\.dataset\.warbuddyRosterBoard/);
   });
 
   it("hides the whole action queue via showActionQueue while keeping the tracker-disabled notice separate", async () => {

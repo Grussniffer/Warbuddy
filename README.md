@@ -1,13 +1,15 @@
 # Warbuddy
 
-## 0.1.37
+## 0.1.38
 
+- Filters every enemy roster row, including members for whom Torn currently hides the Attack link.
+- Renames the vague **Actionable** roster filter to **Queue**; it shows members currently in Warbuddy's action queue plus active retaliation targets.
 - Lets Torn's page continue scrolling while the pointer is over the expanded Roster strip.
 - Keeps the watched-target list independently scrollable when that list itself is open.
 - Keeps the current floating panel as the default presentation.
 - Replaces **Integrated (beta)** with an opt-in **Roster (beta)** strip above both ranked-war faction lists.
 - Keeps the strip collapsed by default while live Watch, Dibs, and retaliation state remains visible beside enemy names.
-- Adds All, Watched, Actionable, and Retals roster filters plus an optional Warbuddy priority order.
+- Adds All, Watched, Queue, and Retals roster filters plus an optional Warbuddy priority order.
 - Applies filtering and ordering with reversible CSS only; Torn's member rows are never moved or rewritten.
 - Falls back to the proven floating panel when Torn does not expose a safe integration point.
 
@@ -69,6 +71,12 @@ Backend access is provided by `https://backend.grusmedia.no`; this repository co
 
 ## Releases
 
+### 0.1.38 - 26 August 2026
+
+- Fixes Watched, Queue, and Retals filtering for flying, hospitalized, and other members whose Torn row has no Attack link.
+- Applies filters to the complete enemy roster mounted inside the verified ranked-war board.
+- Renames **Actionable** to **Queue** without changing or losing the saved filter setting.
+
 ### 0.1.37 - 26 August 2026
 
 - Stops the expanded Roster strip from trapping wheel and trackpad scrolling.
@@ -80,7 +88,7 @@ Backend access is provided by `https://backend.grusmedia.no`; this repository co
 - Reworks the opt-in integrated presentation into a full-width **Roster beta** control strip mounted above the common two-faction board.
 - Leaves the proven Floating mode as the default and keeps the existing attack-page panel unchanged.
 - Shows compact Watch, Dibs, and timed Retal state directly beside recognized enemy names.
-- Adds All, Watched, Actionable, and Retals filters plus an opt-in priority order for the enemy roster.
+- Adds All, Watched, Queue, and Retals filters plus an opt-in priority order for the enemy roster.
 - Keeps live updates running while the roster strip is closed; closing the Floating panel still pauses its connection as before.
 - Uses reversible classes and CSS ordering only, with a Floating fallback when Torn's current markup cannot be verified safely.
 
