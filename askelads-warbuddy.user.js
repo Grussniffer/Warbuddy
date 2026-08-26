@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.38
+// @version      0.1.40
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -176,6 +176,174 @@
 
   const memberDestination = (member) =>
     String(member?.location?.destination || member?.destination || "").toLowerCase();
+
+  const locationCode = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    const codes = {
+      argentina: "AR",
+      canada: "CA",
+      "cayman islands": "KY",
+      china: "CN",
+      hawaii: "HI",
+      japan: "JP",
+      mexico: "MX",
+      "south africa": "ZA",
+      switzerland: "CH",
+      torn: "Torn",
+      uae: "AE",
+      "united arab emirates": "AE",
+      "united kingdom": "UK",
+    };
+    if (codes[normalized]) return codes[normalized];
+    return normalized
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 3)
+      .toUpperCase();
+  };
+
+  const countdown = (milliseconds) => {
+    const seconds = Math.max(0, Math.ceil(Number(milliseconds || 0) / 1000));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+    return `${minutes}:${String(remainder).padStart(2, "0")}`;
+  };
+
+  const memberAvailability = (member, nowMs = Date.now()) => {
+    const status = memberStatus(member);
+    const current = String(member?.location?.current || member?.location?.name || member?.location || "").trim();
+    const destination = String(member?.location?.destination || member?.destination || "").trim();
+    const until = toTimestampMs(member?.status?.untill || member?.status?.until);
+    const remainingMs = Math.max(0, until - nowMs);
+
+    if (status.includes("hospital")) {
+      return {
+        state: "hospital",
+        label: until > nowMs ? `H ${countdown(remainingMs)}` : "H",
+        title: until > nowMs ? `Hospital - ${duration(remainingMs)} remaining` : "Hospital",
+        tone: remainingMs > 0 && remainingMs <= 5 * 60 * 1000 ? "soon" : "",
+        until,
+      };
+    }
+
+    if (status.includes("travel")) {
+      const incoming = destination.toLowerCase().includes("torn");
+      const outgoing = current.toLowerCase().includes("torn") && destination && !incoming;
+      const place = locationCode(incoming ? current : destination || current);
+      const timer = until > nowMs ? ` ${countdown(remainingMs)}` : "";
+      if (incoming) {
+        return {
+          state: "incoming",
+          label: `IN${place && place !== "Torn" ? ` ${place}` : ""}${timer}`,
+          title: `Returning to Torn${current ? ` from ${current}` : ""}${until > nowMs ? ` - ${duration(remainingMs)} remaining` : ""}`,
+          tone: remainingMs > 0 && remainingMs <= 60 * 1000 ? "soon" : "",
+          until,
+        };
+      }
+      if (outgoing) {
+        return {
+          state: "outgoing",
+          label: `OUT${place ? ` ${place}` : ""}${timer}`,
+          title: `Traveling from Torn${destination ? ` to ${destination}` : ""}${until > nowMs ? ` - ${duration(remainingMs)} remaining` : ""}`,
+          tone: "",
+          until,
+        };
+      }
+      return {
+        state: "traveling",
+        label: `TRAVEL${place ? ` ${place}` : ""}${timer}`,
+        title: `Traveling${destination ? ` to ${destination}` : ""}${until > nowMs ? ` - ${duration(remainingMs)} remaining` : ""}`,
+        tone: "",
+        until,
+      };
+    }
+
+    const isOkay = status === "okay" || status.startsWith("okay ") || status.startsWith("okay -");
+    const isAbroad = status.includes("abroad");
+    if ((isOkay || isAbroad) && current && !current.toLowerCase().includes("torn")) {
+      return {
+        state: "abroad",
+        label: locationCode(current) || "Abroad",
+        title: `Abroad in ${current}`,
+        tone: "",
+        until: 0,
+      };
+    }
+
+    if (isOkay) {
+      return { state: "available", label: "", title: "Available in Torn", tone: "", until: 0 };
+    }
+
+    return {
+      state: status || "unknown",
+      label: status ? status.slice(0, 10).toUpperCase() : "",
+      title: status || "Status unavailable",
+      tone: "",
+      until,
+    };
+  };
+
+  const availabilityRank = (state) => {
+    const ranks = {
+      available: 0,
+      hospital: 1,
+      incoming: 2,
+      abroad: 3,
+      outgoing: 4,
+      traveling: 4,
+    };
+    return ranks[String(state || "")] ?? 5;
+  };
+
+  const rosterOrder = (flags = {}, member, nowMs = Date.now()) => {
+    const priority = rosterPriority(flags);
+    const availability = memberAvailability(member, nowMs);
+    const remainingSeconds = availability.until > nowMs
+      ? Math.min(99_999, Math.ceil((availability.until - nowMs) / 1000))
+      : 0;
+    return priority * 1_000_000 + availabilityRank(availability.state) * 100_000 + remainingSeconds;
+  };
+
+  const chainDeadline = (score) => toTimestampMs(
+    score?.chainEnd
+    || score?.chain_end
+    || score?.chainEndsAt
+    || score?.chain_ends_at
+    || score?.chain_timer
+  );
+
+  const chainPresentation = (score, nowMs = Date.now()) => {
+    const chain = Math.max(0, Number(score?.chain || 0));
+    if (!chain) return { active: false, chain: 0, label: "", compact: "", tone: "", endsAt: 0 };
+    const endsAt = chainDeadline(score);
+    if (!endsAt) {
+      return { active: true, chain, label: `Chain ${chain}`, compact: `C${chain}`, tone: "", endsAt: 0 };
+    }
+    const remainingMs = endsAt - nowMs;
+    if (remainingMs <= 0) {
+      return {
+        active: true,
+        chain,
+        label: `Chain ${chain} - timer syncing`,
+        compact: `C${chain} sync`,
+        tone: "wait",
+        endsAt,
+      };
+    }
+    const timer = countdown(remainingMs);
+    return {
+      active: true,
+      chain,
+      label: `Chain ${chain} - ${timer}`,
+      compact: `C${chain} ${timer}`,
+      tone: remainingMs <= 60_000 ? "urgent" : remainingMs <= URGENT_CHAIN_MS ? "wait" : "",
+      endsAt,
+    };
+  };
 
   const normalizeMemberIds = (value) => new Set(
     (Array.isArray(value) ? value : [])
@@ -391,7 +559,7 @@
     const watchedActions = [];
     const watchedIds = normalizeMemberIds(watchedEnemyMemberIds);
     const activeWatchedIds = new Set();
-    const chainEndsAt = toTimestampMs(alliedScore?.chain_timer);
+    const chainEndsAt = chainDeadline(alliedScore);
     const chainRemaining = chainEndsAt - nowMs;
     if (Number(alliedScore?.chain || 0) >= 10 && chainRemaining > 0 && chainRemaining <= CHAIN_WINDOW_MS) {
       result.push({
@@ -542,6 +710,9 @@
     attackUrl,
     buildActionQueue,
     buildFocusQueue,
+    chainDeadline,
+    chainPresentation,
+    countdown,
     dibsAttackPresentation,
     dibsEligibility,
     dibsFeatureEnabled,
@@ -552,12 +723,15 @@
     isFactionPageUrl,
     isRankedWarPageUrl,
     isWarbuddyPageUrl,
+    locationCode,
+    memberAvailability,
     normalizeDisplayMode,
     normalizeRosterFilter,
     normalizeTargetGroups,
     notificationCandidates,
     profileMemberIdFromUrl,
     rosterFilterMatches,
+    rosterOrder,
     rosterPriority,
     scoreForFaction,
     toTimestampMs,
@@ -571,7 +745,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.38";
+  const SCRIPT_VERSION = "0.1.40";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -772,11 +946,17 @@
     #${PANEL_ID} .wc-roster-matchup { min-width:0; overflow:hidden; color:#e4e4e7; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
     #${PANEL_ID} .wc-roster-status { display:inline-flex; flex:0 0 auto; align-items:center; gap:4px; font-size:10px; font-weight:700; }
     #${PANEL_ID} .wc-roster-counts { display:flex; flex:0 0 auto; align-items:center; gap:7px; color:#e4e4e7; font-size:10px; }
+    #${PANEL_ID} .wc-chains, #${PANEL_ID} .wc-roster-chains { display:flex; flex:0 0 auto; align-items:center; gap:6px; }
+    #${PANEL_ID} .wc-roster-chain, #${PANEL_ID} .wc-chain { display:inline-flex; flex:0 0 auto; align-items:center; gap:3px; color:#d4d4d8; font-weight:700; white-space:nowrap; }
+    #${PANEL_ID} .wc-chain-side { color:#a1a1aa; font-size:9px; font-weight:700; text-transform:uppercase; }
+    #${PANEL_ID} .wc-roster-chain.wait, #${PANEL_ID} .wc-chain.wait { color:#fbbf24; }
+    #${PANEL_ID} .wc-roster-chain.urgent, #${PANEL_ID} .wc-chain.urgent { color:#f87171; }
     #${PANEL_ID} .wc-roster-controls { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px; border:1px solid #3f3f46; border-radius:4px; background:#18181b; }
     #${PANEL_ID} .wc-roster-filters { display:flex; min-width:0; flex-wrap:wrap; gap:4px; }
     #${PANEL_ID} .wc-roster-filter { border:1px solid #52525b; border-radius:3px; background:#27272a; color:#d4d4d8; padding:4px 7px; font:inherit; font-weight:700; cursor:pointer; }
     #${PANEL_ID} .wc-roster-filter.active { border-color:#84a83b; background:#405719; color:#fff; }
     #${PANEL_ID} .wc-roster-sort { display:inline-flex; flex:0 0 auto; align-items:center; gap:5px; color:#d4d4d8; font-weight:700; white-space:nowrap; }
+    #${PANEL_ID} .wc-roster-sort.paused { color:#fbbf24; }
     #${PANEL_ID} .wc-roster-sort input { margin:0; accent-color:#84a83b; }
     #${PANEL_ID}.wc-integrated-toolbar { position:absolute !important; top:calc(100% + 6px) !important; right:0 !important; bottom:auto !important; left:auto !important; width:min(320px,92vw); }
     #${PANEL_ID}.wc-integrated-toolbar.wc-collapsed { position:relative !important; top:auto !important; right:auto !important; width:auto; }
@@ -798,6 +978,8 @@
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.mine { color:#10b981; }
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.taken { color:#a1a1aa; }
     .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
+    .${INLINE_TOOLS_CLASS} .wc-inline-status { display:inline-flex; min-height:17px; align-items:center; border:1px solid #52525b; border-radius:3px; background:#27272a; color:#d4d4d8; padding:0 3px; font:700 9px/1 Arial,Helvetica,sans-serif; white-space:nowrap; }
+    .${INLINE_TOOLS_CLASS} .wc-inline-status.soon { border-color:#b45309; background:#451a03; color:#fde68a; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
     #${PANEL_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${PANEL_ID}.wc-collapsed .wc-body { display:none; }
@@ -811,7 +993,8 @@
     #${PANEL_ID} .wc-player { min-width:0; flex:0 1 auto; overflow:hidden; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
     #${PANEL_ID} .wc-version { flex:0 0 auto; color:#71717a; font-size:10px; font-weight:400; }
     #${PANEL_ID} .wc-header-status { display:inline-flex; flex:0 0 auto; align-items:center; gap:3px; margin-left:auto; color:#d4d4d8; font-size:10px; font-weight:600; }
-    #${PANEL_ID} .wc-matchup { margin-top:1px; overflow:hidden; color:#a1a1aa; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+    #${PANEL_ID} .wc-context { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:7px; margin-top:1px; font-size:10px; }
+    #${PANEL_ID} .wc-matchup { min-width:0; overflow:hidden; color:#a1a1aa; text-overflow:ellipsis; white-space:nowrap; }
     #${PANEL_ID} .wc-body { max-height:calc(min(70vh,620px) - 42px); max-height:calc(min(70dvh,620px) - 42px); overflow:auto; overscroll-behavior:contain; padding:7px; }
     #${PANEL_ID} .wc-dot { width:7px; height:7px; flex:0 0 auto; border-radius:50%; background:#71717a; }
     #${PANEL_ID} .wc-dot.live { background:#10b981; }
@@ -905,7 +1088,7 @@
     #${PANEL_ID} .wc-more-actions { margin:0; border:0; border-top:1px solid #27272a; border-radius:0; }
     #${PANEL_ID} .wc-privacy { padding:0 6px 6px; }
     #${PANEL_ID} .wc-private-actions { display:flex; gap:5px; padding:0 6px 6px; }
-    @media (max-width:520px) { #${PANEL_ID} { right:6px; right:max(6px,env(safe-area-inset-right)); bottom:6px; bottom:max(6px,env(safe-area-inset-bottom)); width:calc(100vw - 12px); width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-collapsed { width:auto; } #${PANEL_ID}.wc-integrated-inline { width:100%; max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-integrated-inline.wc-collapsed { width:100%; } #${PANEL_ID}.wc-roster-mode { max-height:none; } #${PANEL_ID}.wc-roster-mode .wc-body { max-height:none; overflow:visible; overscroll-behavior:auto; } #${PANEL_ID} .wc-roster-summary { gap:5px; padding:0 6px; } #${PANEL_ID} .wc-roster-matchup { display:none; } #${PANEL_ID} .wc-roster-counts span:first-child { display:none; } #${PANEL_ID} .wc-roster-controls { align-items:stretch; flex-direction:column; } #${PANEL_ID} .wc-roster-sort { min-height:34px; } #${INTEGRATED_HOST_ID}.wc-attack-host #${PANEL_ID}:not(.wc-collapsed) { position:fixed !important; top:auto !important; right:6px !important; right:max(6px,env(safe-area-inset-right)) !important; bottom:6px !important; bottom:max(6px,env(safe-area-inset-bottom)) !important; left:auto !important; width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); } #${PANEL_ID} .wc-body { max-height:calc(58vh - 42px); max-height:calc(58dvh - 42px); padding-bottom:7px; padding-bottom:max(7px,env(safe-area-inset-bottom)); } #${PANEL_ID} .wc-item-detail { white-space:normal; } }
+    @media (max-width:520px) { #${PANEL_ID} { right:6px; right:max(6px,env(safe-area-inset-right)); bottom:6px; bottom:max(6px,env(safe-area-inset-bottom)); width:calc(100vw - 12px); width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-collapsed { width:auto; } #${PANEL_ID}.wc-integrated-inline { width:100%; max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-integrated-inline.wc-collapsed { width:100%; } #${PANEL_ID}.wc-roster-mode { max-height:none; } #${PANEL_ID}.wc-roster-mode .wc-body { max-height:none; overflow:visible; overscroll-behavior:auto; } #${PANEL_ID} .wc-roster-summary { gap:5px; padding:0 6px; } #${PANEL_ID} .wc-roster-matchup { display:none; } #${PANEL_ID} .wc-roster-watched { display:none; } #${PANEL_ID} .wc-roster-controls { align-items:stretch; flex-direction:column; } #${PANEL_ID} .wc-roster-sort { min-height:34px; } #${INTEGRATED_HOST_ID}.wc-attack-host #${PANEL_ID}:not(.wc-collapsed) { position:fixed !important; top:auto !important; right:6px !important; right:max(6px,env(safe-area-inset-right)) !important; bottom:6px !important; bottom:max(6px,env(safe-area-inset-bottom)) !important; left:auto !important; width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); } #${PANEL_ID} .wc-body { max-height:calc(58vh - 42px); max-height:calc(58dvh - 42px); padding-bottom:7px; padding-bottom:max(7px,env(safe-area-inset-bottom)); } #${PANEL_ID} .wc-item-detail { white-space:normal; } }
     @media (pointer:coarse) { #${PANEL_ID} .wc-button, #${PANEL_ID} .wc-link { min-height:40px; padding:8px 10px; } #${PANEL_ID} .wc-icon { width:40px; padding:0; } #${PANEL_ID} .wc-dibs, #${PANEL_ID} .wc-dibs-close { width:40px; height:40px; font-size:16px; } #${PANEL_ID} .wc-loadout-button { width:40px; height:40px; } #${PANEL_ID} .wc-target-option-row { min-height:44px; } #${PANEL_ID} .wc-target-option input { width:18px; height:18px; } #${PANEL_ID} summary { min-height:40px; padding:11px 8px; } .${INLINE_TOOLS_CLASS} button, .${INLINE_TOOLS_CLASS} a { width:30px; height:30px; } .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:30px; padding:0 5px; } }
   `);
 
@@ -1193,6 +1376,7 @@
       delete row.dataset.warbuddyMemberRow;
       delete row.dataset.warbuddyMemberId;
       delete row.dataset.warbuddyPriority;
+      delete row.dataset.warbuddyAvailability;
     });
     document.querySelectorAll?.(".warbuddy-roster-sort-parent").forEach((parent) => {
       parent.classList.remove("warbuddy-roster-sort-parent");
@@ -2063,6 +2247,7 @@
     const enemyRoster = state.rosters.get(enemyFactionId)?.members || [];
     const ownMember = ownRoster.find((member) => Number(member?.member_id || 0) === Number(state.session?.playerId || 0));
     const alliedScore = core.scoreForFaction(state.scores, ownFactionId);
+    const enemyScore = core.scoreForFaction(state.scores, enemyFactionId);
     const actionQueueEnabled = state.settings?.enabled !== false && state.settings?.showActionQueue !== false;
     const genericSuggestionsEnabled = rosterIsFresh(ownFactionId) && rosterIsFresh(enemyFactionId);
     const actions = !actionQueueEnabled ? [] : core.applyTargetGroups(core.buildActionQueue({
@@ -2074,7 +2259,7 @@
     }).filter((item) => genericSuggestionsEnabled || !String(item.key || "").startsWith("online-")), state.targetGroups);
     const retaliation = core.activeRetaliations(state.retaliation, Math.floor(state.nowMs / 1000));
     const focusItems = core.buildFocusQueue({ actions, retaliations: retaliation, limit: 3 });
-    return { ownFactionId, ownFactionName, enemyFactionId, enemyFactionName, ownRoster, enemyRoster, actions, retaliation, focusItems, dibs: state.dibs, actionQueueEnabled };
+    return { ownFactionId, ownFactionName, enemyFactionId, enemyFactionName, ownRoster, enemyRoster, alliedScore, enemyScore, actions, retaliation, focusItems, dibs: state.dibs, actionQueueEnabled };
   }
 
   const statusView = () => {
@@ -2092,6 +2277,10 @@
     if (state.phase === "authenticating") return { label: "Checking key", tone: "wait" };
     return { label: "Connecting", tone: "wait" };
   };
+
+  const ffscouterFilterActive = () => !!document.querySelector?.(
+    '[data-ffscouter-active-filter="true"], [data-ffscouter-active-filter="1"]'
+  );
 
   function syncIntegratedMemberTools(view = sessionView()) {
     const canDecorate = state.active
@@ -2167,6 +2356,7 @@
         ? rankedWarOwnRowForAnchor(anchor)
         : rankedWarRowForAnchor(anchor);
       const actionable = actionableIds.has(memberId) || !!retaliation;
+      const availability = core.memberAvailability(member, state.nowMs);
       const flags = {
         watched,
         actionable,
@@ -2184,7 +2374,8 @@
         row.classList.toggle("warbuddy-row-retal", flags.retaliation);
         row.classList.toggle("warbuddy-row-actionable", flags.actionable && !flags.retaliation);
         row.classList.toggle("warbuddy-roster-hidden", !core.rosterFilterMatches(state.rosterFilter, flags));
-        row.dataset.warbuddyPriority = String(core.rosterPriority(flags));
+        row.dataset.warbuddyPriority = String(core.rosterOrder(flags, member, state.nowMs));
+        row.dataset.warbuddyAvailability = availability.state;
       }
 
       const attackLink = row?.querySelector?.("a[href*='sid=attack']");
@@ -2203,7 +2394,10 @@
       const retaliationRemaining = retaliation
         ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
         : "";
-      tools.innerHTML = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && (claim || eligibility?.eligible) ? `<button type="button" class="wc-inline-dibs ${dibsTone}" data-inline-action="${canClaim ? "claim" : "inspect"}" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
+      const availabilityMarkup = availability.label
+        ? `<span class="wc-inline-status ${escapeHtml(availability.tone || "")}" title="${escapeHtml(availability.title)}">${escapeHtml(availability.label)}</span>`
+        : "";
+      tools.innerHTML = `${availabilityMarkup}<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && (claim || eligibility?.eligible) ? `<button type="button" class="wc-inline-dibs ${dibsTone}" data-inline-action="${canClaim ? "claim" : "inspect"}" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
 
       tools.querySelector?.('[data-inline-action="watch"]')?.addEventListener("click", (event) => {
         event.preventDefault();
@@ -2218,7 +2412,15 @@
     }
 
     let activeSortParent = null;
-    if (state.rosterPrioritySort && decoratedRows.length > 1) {
+    const ffscouterOwnsOrder = state.rosterPrioritySort && ffscouterFilterActive();
+    const sortLabel = document.querySelector?.(`#${PANEL_ID} .wc-roster-sort`);
+    sortLabel?.classList.toggle("paused", ffscouterOwnsOrder);
+    if (sortLabel) {
+      sortLabel.title = ffscouterOwnsOrder
+        ? "Warbuddy ordering is paused while FFScouter filtering is active."
+        : "Prioritize Retals, Dibs, watched targets, and useful availability states.";
+    }
+    if (state.rosterPrioritySort && !ffscouterOwnsOrder && decoratedRows.length > 1) {
       const parents = new Set(decoratedRows.map((row) => row.parentElement).filter(Boolean));
       if (parents.size === 1) {
         const parent = parents.values().next().value;
@@ -2231,7 +2433,7 @@
           activeSortParent = parent;
           parent.classList.add("warbuddy-roster-sort-parent");
           decoratedRows.forEach((row) => {
-            row.style.order = String(10 + Number(row.dataset.warbuddyPriority || 7));
+            row.style.order = String(Number(row.dataset.warbuddyPriority || 0));
           });
         }
       }
@@ -2250,6 +2452,7 @@
       delete row.dataset.warbuddyMemberRow;
       delete row.dataset.warbuddyMemberId;
       delete row.dataset.warbuddyPriority;
+      delete row.dataset.warbuddyAvailability;
     });
     document.querySelectorAll?.(".warbuddy-roster-sort-parent").forEach((parent) => {
       if (parent !== activeSortParent) parent.classList.remove("warbuddy-roster-sort-parent");
@@ -2837,6 +3040,17 @@
     const matchupTitle = view.enemyFactionId
       ? `${ownFactionLabel} (${view.ownFactionId}) vs ${enemyFactionLabel} (${view.enemyFactionId})`
       : ownFactionLabel;
+    const chainEntries = [
+      { side: "Us", faction: ownFactionLabel, chain: core.chainPresentation(view.alliedScore, state.nowMs) },
+      { side: "Them", faction: enemyFactionLabel, chain: core.chainPresentation(view.enemyScore, state.nowMs) },
+    ].filter((entry) => entry.chain.active);
+    const chainMarkup = (className) => chainEntries.map(({ side, faction, chain }) => {
+      const syncing = chain.endsAt && chain.tone === "wait" && chain.compact.endsWith("sync");
+      const title = `${faction || side}: ${chain.label}${syncing ? ". Waiting for the next backend score sample." : ""}`;
+      return `<span class="${className} ${escapeHtml(chain.tone)}" title="${escapeHtml(title)}"><span class="wc-chain-side">${side}</span>${escapeHtml(chain.compact)}</span>`;
+    }).join("");
+    const standardChainMarkup = chainMarkup("wc-chain");
+    const rosterChainMarkup = chainMarkup("wc-roster-chain");
     const actionableMemberIds = new Set([
       ...(view.actions || []).map((action) => Number(action?.memberId || 0)),
       ...(view.retaliation || []).map((attack) => Number(attack?.attackerId || 0)),
@@ -2848,7 +3062,7 @@
       ["retaliations", "Retals"],
     ].map(([value, label]) => `<button type="button" class="wc-roster-filter${state.rosterFilter === value ? " active" : ""}" data-roster-filter="${value}" aria-pressed="${state.rosterFilter === value ? "true" : "false"}">${label}</button>`).join("");
     const rosterControls = rosterMode
-      ? `<div class="wc-roster-controls"><div class="wc-roster-filters" role="group" aria-label="Filter enemy roster">${rosterFilterOptions}</div><label class="wc-roster-sort"><input type="checkbox" data-field="roster-priority-sort"${state.rosterPrioritySort ? " checked" : ""}>Warbuddy priority</label></div>`
+      ? `<div class="wc-roster-controls"><div class="wc-roster-filters" role="group" aria-label="Filter enemy roster">${rosterFilterOptions}</div><label class="wc-roster-sort" title="Prioritize Retals, Dibs, watched targets, and useful availability states."><input type="checkbox" data-field="roster-priority-sort"${state.rosterPrioritySort ? " checked" : ""}>Warbuddy priority</label></div>`
       : "";
 
     const targetIds = state.targetsOpen || state.targetsDirty ? normalizeTargetIds(state.targetDraft) : savedTargetIds();
@@ -2908,10 +3122,10 @@
       <details data-section="privacy"${state.privacyOpen ? " open" : ""}><summary>Privacy</summary><div class="wc-privacy">The key stays in your userscript storage. Torn and the backend use it to verify your profile and faction. Warbuddy records your version, connection mode, and last use for faction admins. Its scoped session can save only your watched-target list and Dibs actions.</div>${savedKey ? `<div class="wc-private-actions"><button class="wc-button" data-action="refresh"${mutationBusy || state.keySaving ? " disabled" : ""}>Reconnect</button><button class="wc-button" data-action="change-key"${mutationBusy || state.keySaving ? " disabled" : ""}>Change key</button><button class="wc-button" data-action="forget"${mutationBusy || state.keySaving ? " disabled" : ""}>${state.forgetConfirm ? "Confirm forget" : "Forget key"}</button></div>` : ""}</details>
     `;
     const standardHeader = `<div class="wc-header">
-      <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel ? `<div class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</div>` : ""}</div>
+      <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel || standardChainMarkup ? `<div class="wc-context">${matchupLabel ? `<span class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}${standardChainMarkup ? `<span class="wc-chains">${standardChainMarkup}</span>` : ""}</div>` : ""}</div>
       <button class="wc-button wc-icon" data-action="collapse" aria-expanded="${state.collapsed ? "false" : "true"}" aria-label="${state.collapsed ? "Expand and resume Warbuddy" : "Collapse and pause Warbuddy"}" title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}">${state.collapsed ? "+" : "-"}</button>
     </div>`;
-    const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts"><span>Watched ${savedTargetIds().length}</span><span>Queue ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
+    const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts">${rosterChainMarkup ? `<span class="wc-roster-chains">${rosterChainMarkup}</span>` : ""}<span class="wc-roster-watched">Watched ${savedTargetIds().length}</span><span>Queue ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
     panel.innerHTML = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
 
     const nextBody = panel.querySelector(".wc-body");

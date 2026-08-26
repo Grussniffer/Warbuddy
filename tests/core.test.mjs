@@ -141,9 +141,98 @@ describe("Warbuddy roster presentation", () => {
     assert.equal(core.rosterPriority({}), 7);
     assert.equal(core.rosterPriority({ dibsTaken: true }), 8);
   });
+
+  it("presents backend hospital and travel state compactly", () => {
+    const nowMs = 2_000_000_000_000;
+    assert.deepEqual(
+      core.memberAvailability({
+        status: { userStatus: "Hospital", untill: nowMs + 245_000 },
+        location: { current: "Torn" },
+      }, nowMs),
+      {
+        state: "hospital",
+        label: "H 4:05",
+        title: "Hospital - 4m 05s remaining",
+        tone: "soon",
+        until: nowMs + 245_000,
+      }
+    );
+    assert.equal(core.memberAvailability({
+      status: { userStatus: "Traveling", untill: nowMs + 128_000 },
+      location: { current: "Switzerland", destination: "Torn" },
+    }, nowMs).label, "IN CH 2:08");
+    assert.equal(core.memberAvailability({
+      status: { userStatus: "Traveling", untill: nowMs + 400_000 },
+      location: { current: "Torn", destination: "Mexico" },
+    }, nowMs).label, "OUT MX 6:40");
+    assert.equal(core.memberAvailability({
+      status: { userStatus: "Okay" },
+      location: { current: "Canada" },
+    }, nowMs).label, "CA");
+    assert.equal(core.memberAvailability({
+      status: { userStatus: "Abroad" },
+      location: { current: "United Kingdom" },
+    }, nowMs).label, "UK");
+    assert.equal(core.memberAvailability({
+      status: { userStatus: "Okay" },
+      location: { current: "Torn" },
+    }, nowMs).label, "");
+  });
+
+  it("keeps Warbuddy urgency ahead of availability while sorting ordinary rows usefully", () => {
+    const nowMs = 2_000_000_000_000;
+    const available = { status: { userStatus: "Okay" }, location: { current: "Torn" } };
+    const hospital = {
+      status: { userStatus: "Hospital", untill: nowMs + 60_000 },
+      location: { current: "Torn" },
+    };
+    const incoming = {
+      status: { userStatus: "Traveling", untill: nowMs + 60_000 },
+      location: { current: "Canada", destination: "Torn" },
+    };
+    assert.ok(core.rosterOrder({ retaliation: true }, incoming, nowMs) < core.rosterOrder({}, available, nowMs));
+    assert.ok(core.rosterOrder({}, available, nowMs) < core.rosterOrder({}, hospital, nowMs));
+    assert.ok(core.rosterOrder({}, hospital, nowMs) < core.rosterOrder({}, incoming, nowMs));
+    assert.ok(core.rosterOrder({ dibsTaken: true }, available, nowMs) > core.rosterOrder({}, incoming, nowMs));
+  });
 });
 
 describe("Warbuddy action queue", () => {
+  it("uses an explicit backend chain deadline and keeps an expired live chain visible as syncing", () => {
+    const nowMs = 2_000_000_000_000;
+    assert.deepEqual(core.chainPresentation({
+      chain: 27,
+      chain_end: nowMs + 90_000,
+      chain_timer: nowMs + 20_000,
+    }, nowMs), {
+      active: true,
+      chain: 27,
+      label: "Chain 27 - 1:30",
+      compact: "C27 1:30",
+      tone: "wait",
+      endsAt: nowMs + 90_000,
+    });
+    assert.deepEqual(core.chainPresentation({ chain: 27, chain_timer: nowMs - 1_000 }, nowMs), {
+      active: true,
+      chain: 27,
+      label: "Chain 27 - timer syncing",
+      compact: "C27 sync",
+      tone: "wait",
+      endsAt: nowMs - 1_000,
+    });
+    assert.equal(core.chainPresentation({ chain: 0 }, nowMs).active, false);
+  });
+
+  it("accepts the backend's explicit chain deadline in queue warnings", () => {
+    const nowMs = 2_000_000_000_000;
+    const items = core.buildActionQueue({
+      nowMs,
+      alliedScore: { chain: 27, chainEnd: nowMs + 30_000 },
+    });
+    assert.equal(items[0]?.key, "chain-risk");
+    assert.equal(items[0]?.detail, "30s remaining");
+  });
+
   it("prioritizes urgent chain and hospital actions before online targets", () => {
     const nowMs = 2_000_000_000_000;
     const items = core.buildActionQueue({
@@ -668,6 +757,11 @@ describe("Warbuddy panel state", () => {
 
     assert.ok(source.includes('class="wc-header-status"'));
     assert.ok(source.includes('class="wc-matchup"'));
+    assert.ok(source.includes("const enemyScore = core.scoreForFaction(state.scores, enemyFactionId);"));
+    assert.ok(source.includes('{ side: "Us", faction: ownFactionLabel'));
+    assert.ok(source.includes('{ side: "Them", faction: enemyFactionLabel'));
+    assert.ok(source.includes('class="wc-chains"'));
+    assert.ok(source.includes('class="wc-roster-chains"'));
     assert.ok(source.includes("ownFactionName"));
     assert.ok(source.includes("enemyFactionName"));
     assert.ok(source.includes("factionNames: new Map()"));
@@ -933,12 +1027,16 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(inlineSource, /rosterProfileAnchors\(view\.enemyRoster, board\)/);
     assert.match(inlineSource, /board\?\.contains\?\.\(anchor\) \? rankedWarOwnRowForAnchor\(anchor\) : rankedWarRowForAnchor\(anchor\)/);
     assert.match(inlineSource, /core\.rosterFilterMatches\(state\.rosterFilter, flags\)/);
-    assert.match(inlineSource, /core\.rosterPriority\(flags\)/);
+    assert.match(inlineSource, /core\.memberAvailability\(member, state\.nowMs\)/);
+    assert.match(inlineSource, /core\.rosterOrder\(flags, member, state\.nowMs\)/);
+    assert.match(inlineSource, /ffscouterFilterActive\(\)/);
+    assert.match(inlineSource, /!ffscouterOwnsOrder/);
     assert.match(inlineSource, /row\.style\.order = String/);
     assert.doesNotMatch(inlineSource, /appendChild\(row\)|insertBefore\(row/);
     assert.match(cleanupSource, /warbuddy-roster-hidden/);
     assert.match(cleanupSource, /removeProperty\?\.\("order"\)/);
     assert.match(cleanupSource, /warbuddy-roster-sort-parent/);
+    assert.match(cleanupSource, /warbuddyAvailability/);
     assert.match(mountCleanupSource, /\[data-warbuddy-roster-board\]/);
     assert.match(mountCleanupSource, /delete board\.dataset\.warbuddyRosterBoard/);
   });

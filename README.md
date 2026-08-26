@@ -1,6 +1,13 @@
 # Warbuddy
 
-## 0.1.38
+## 0.1.40
+
+- Shows both factions' active chain counts and timers as compact **Us** and **Them** labels in Floating and Roster mode.
+- Adds compact hospital, inbound-flight, outbound-flight, and abroad state beside enemy names in Roster mode using the existing backend roster stream.
+- Labels an expired saved chain deadline as syncing instead of showing a misleading zero.
+- Extends the opt-in Warbuddy priority order with useful availability ordering while preserving Retals, Dibs, Queue, and watched-target priority.
+- Pauses Warbuddy ordering automatically while FFScouter has an active roster filter.
+- Adds no Torn polling, third-party cache traffic, database migration, or new stored API key.
 
 - Filters every enemy roster row, including members for whom Torn currently hides the Attack link.
 - Renames the vague **Actionable** roster filter to **Queue**; it shows members currently in Warbuddy's action queue plus active retaliation targets.
@@ -70,6 +77,19 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.40 - 27 August 2026
+
+- Shows active chain counts and countdowns for both the verified faction and its current opponent in both compact headers.
+- Reads both values from the existing faction-scoped backend score snapshot, adding no Torn requests, storage, or direct API access.
+
+### 0.1.39 - 27 August 2026
+
+- Brings the useful roster awareness from Torn War Stuff Enhanced into Warbuddy through data already supplied by the Grusmedia backend.
+- Adds compact `H`, `IN`, `OUT`, and country state labels with live countdowns and full hover details.
+- Adds backend-driven chain timing to the compact Floating and Roster headers; passed deadlines remain visible as syncing until the next score sample.
+- Makes the optional priority order availability-aware and yields ordering to FFScouter whenever its roster filter is active.
+- Deliberately avoids direct Torn API polling, `twse.dev`, local API-key duplication, React internals, and physical row movement.
 
 ### 0.1.38 - 26 August 2026
 

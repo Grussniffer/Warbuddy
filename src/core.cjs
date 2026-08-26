@@ -149,6 +149,174 @@
   const memberDestination = (member) =>
     String(member?.location?.destination || member?.destination || "").toLowerCase();
 
+  const locationCode = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    const codes = {
+      argentina: "AR",
+      canada: "CA",
+      "cayman islands": "KY",
+      china: "CN",
+      hawaii: "HI",
+      japan: "JP",
+      mexico: "MX",
+      "south africa": "ZA",
+      switzerland: "CH",
+      torn: "Torn",
+      uae: "AE",
+      "united arab emirates": "AE",
+      "united kingdom": "UK",
+    };
+    if (codes[normalized]) return codes[normalized];
+    return normalized
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 3)
+      .toUpperCase();
+  };
+
+  const countdown = (milliseconds) => {
+    const seconds = Math.max(0, Math.ceil(Number(milliseconds || 0) / 1000));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+    return `${minutes}:${String(remainder).padStart(2, "0")}`;
+  };
+
+  const memberAvailability = (member, nowMs = Date.now()) => {
+    const status = memberStatus(member);
+    const current = String(member?.location?.current || member?.location?.name || member?.location || "").trim();
+    const destination = String(member?.location?.destination || member?.destination || "").trim();
+    const until = toTimestampMs(member?.status?.untill || member?.status?.until);
+    const remainingMs = Math.max(0, until - nowMs);
+
+    if (status.includes("hospital")) {
+      return {
+        state: "hospital",
+        label: until > nowMs ? `H ${countdown(remainingMs)}` : "H",
+        title: until > nowMs ? `Hospital - ${duration(remainingMs)} remaining` : "Hospital",
+        tone: remainingMs > 0 && remainingMs <= 5 * 60 * 1000 ? "soon" : "",
+        until,
+      };
+    }
+
+    if (status.includes("travel")) {
+      const incoming = destination.toLowerCase().includes("torn");
+      const outgoing = current.toLowerCase().includes("torn") && destination && !incoming;
+      const place = locationCode(incoming ? current : destination || current);
+      const timer = until > nowMs ? ` ${countdown(remainingMs)}` : "";
+      if (incoming) {
+        return {
+          state: "incoming",
+          label: `IN${place && place !== "Torn" ? ` ${place}` : ""}${timer}`,
+          title: `Returning to Torn${current ? ` from ${current}` : ""}${until > nowMs ? ` - ${duration(remainingMs)} remaining` : ""}`,
+          tone: remainingMs > 0 && remainingMs <= 60 * 1000 ? "soon" : "",
+          until,
+        };
+      }
+      if (outgoing) {
+        return {
+          state: "outgoing",
+          label: `OUT${place ? ` ${place}` : ""}${timer}`,
+          title: `Traveling from Torn${destination ? ` to ${destination}` : ""}${until > nowMs ? ` - ${duration(remainingMs)} remaining` : ""}`,
+          tone: "",
+          until,
+        };
+      }
+      return {
+        state: "traveling",
+        label: `TRAVEL${place ? ` ${place}` : ""}${timer}`,
+        title: `Traveling${destination ? ` to ${destination}` : ""}${until > nowMs ? ` - ${duration(remainingMs)} remaining` : ""}`,
+        tone: "",
+        until,
+      };
+    }
+
+    const isOkay = status === "okay" || status.startsWith("okay ") || status.startsWith("okay -");
+    const isAbroad = status.includes("abroad");
+    if ((isOkay || isAbroad) && current && !current.toLowerCase().includes("torn")) {
+      return {
+        state: "abroad",
+        label: locationCode(current) || "Abroad",
+        title: `Abroad in ${current}`,
+        tone: "",
+        until: 0,
+      };
+    }
+
+    if (isOkay) {
+      return { state: "available", label: "", title: "Available in Torn", tone: "", until: 0 };
+    }
+
+    return {
+      state: status || "unknown",
+      label: status ? status.slice(0, 10).toUpperCase() : "",
+      title: status || "Status unavailable",
+      tone: "",
+      until,
+    };
+  };
+
+  const availabilityRank = (state) => {
+    const ranks = {
+      available: 0,
+      hospital: 1,
+      incoming: 2,
+      abroad: 3,
+      outgoing: 4,
+      traveling: 4,
+    };
+    return ranks[String(state || "")] ?? 5;
+  };
+
+  const rosterOrder = (flags = {}, member, nowMs = Date.now()) => {
+    const priority = rosterPriority(flags);
+    const availability = memberAvailability(member, nowMs);
+    const remainingSeconds = availability.until > nowMs
+      ? Math.min(99_999, Math.ceil((availability.until - nowMs) / 1000))
+      : 0;
+    return priority * 1_000_000 + availabilityRank(availability.state) * 100_000 + remainingSeconds;
+  };
+
+  const chainDeadline = (score) => toTimestampMs(
+    score?.chainEnd
+    || score?.chain_end
+    || score?.chainEndsAt
+    || score?.chain_ends_at
+    || score?.chain_timer
+  );
+
+  const chainPresentation = (score, nowMs = Date.now()) => {
+    const chain = Math.max(0, Number(score?.chain || 0));
+    if (!chain) return { active: false, chain: 0, label: "", compact: "", tone: "", endsAt: 0 };
+    const endsAt = chainDeadline(score);
+    if (!endsAt) {
+      return { active: true, chain, label: `Chain ${chain}`, compact: `C${chain}`, tone: "", endsAt: 0 };
+    }
+    const remainingMs = endsAt - nowMs;
+    if (remainingMs <= 0) {
+      return {
+        active: true,
+        chain,
+        label: `Chain ${chain} - timer syncing`,
+        compact: `C${chain} sync`,
+        tone: "wait",
+        endsAt,
+      };
+    }
+    const timer = countdown(remainingMs);
+    return {
+      active: true,
+      chain,
+      label: `Chain ${chain} - ${timer}`,
+      compact: `C${chain} ${timer}`,
+      tone: remainingMs <= 60_000 ? "urgent" : remainingMs <= URGENT_CHAIN_MS ? "wait" : "",
+      endsAt,
+    };
+  };
+
   const normalizeMemberIds = (value) => new Set(
     (Array.isArray(value) ? value : [])
       .map((memberId) => Number(memberId))
@@ -363,7 +531,7 @@
     const watchedActions = [];
     const watchedIds = normalizeMemberIds(watchedEnemyMemberIds);
     const activeWatchedIds = new Set();
-    const chainEndsAt = toTimestampMs(alliedScore?.chain_timer);
+    const chainEndsAt = chainDeadline(alliedScore);
     const chainRemaining = chainEndsAt - nowMs;
     if (Number(alliedScore?.chain || 0) >= 10 && chainRemaining > 0 && chainRemaining <= CHAIN_WINDOW_MS) {
       result.push({
@@ -514,6 +682,9 @@
     attackUrl,
     buildActionQueue,
     buildFocusQueue,
+    chainDeadline,
+    chainPresentation,
+    countdown,
     dibsAttackPresentation,
     dibsEligibility,
     dibsFeatureEnabled,
@@ -524,12 +695,15 @@
     isFactionPageUrl,
     isRankedWarPageUrl,
     isWarbuddyPageUrl,
+    locationCode,
+    memberAvailability,
     normalizeDisplayMode,
     normalizeRosterFilter,
     normalizeTargetGroups,
     notificationCandidates,
     profileMemberIdFromUrl,
     rosterFilterMatches,
+    rosterOrder,
     rosterPriority,
     scoreForFaction,
     toTimestampMs,
