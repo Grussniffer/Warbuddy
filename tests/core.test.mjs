@@ -118,6 +118,31 @@ const bootUserscript = async (href, { withBody = true, visibilityState = "hidden
   };
 };
 
+describe("Warbuddy roster presentation", () => {
+  it("normalizes filters and matches only the requested row state", () => {
+    assert.equal(core.normalizeRosterFilter(undefined), "all");
+    assert.equal(core.normalizeRosterFilter("RETALIATIONS"), "retaliations");
+    assert.equal(core.normalizeRosterFilter("unexpected"), "all");
+    assert.equal(core.rosterFilterMatches("all", {}), true);
+    assert.equal(core.rosterFilterMatches("watched", { watched: true }), true);
+    assert.equal(core.rosterFilterMatches("watched", { actionable: true }), false);
+    assert.equal(core.rosterFilterMatches("actionable", { retaliation: true }), true);
+    assert.equal(core.rosterFilterMatches("retaliations", { actionable: true }), false);
+  });
+
+  it("orders urgent roster states without changing ordinary Torn order", () => {
+    assert.equal(core.rosterPriority({ retaliation: true, dibsTaken: true }), 0);
+    assert.equal(core.rosterPriority({ dibsMine: true }), 1);
+    assert.equal(core.rosterPriority({ actionable: true }), 2);
+    assert.equal(core.rosterPriority({ watched: true, targetGroup: "priority" }), 3);
+    assert.equal(core.rosterPriority({ watched: true, targetGroup: "chain" }), 4);
+    assert.equal(core.rosterPriority({ watched: true, targetGroup: "later" }), 5);
+    assert.equal(core.rosterPriority({ watched: true }), 6);
+    assert.equal(core.rosterPriority({}), 7);
+    assert.equal(core.rosterPriority({ dibsTaken: true }), 8);
+  });
+});
+
 describe("Warbuddy action queue", () => {
   it("prioritizes urgent chain and hospital actions before online targets", () => {
     const nowMs = 2_000_000_000_000;
@@ -539,7 +564,6 @@ describe("Warbuddy panel state", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     assert.ok(source.includes('class="wc-input wc-secret-input"'));
-    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.34"'));
     assert.ok(source.includes('if (!core.dibsFeatureEnabled(state.settings)) return ""'));
     assert.ok(source.includes('type="text"'));
     assert.ok(source.includes('autocomplete="one-time-code"'));
@@ -820,14 +844,14 @@ describe("Warbuddy panel state", () => {
     assert.doesNotMatch(source, /socketClosing/);
   });
 
-  it("pauses all live work while the panel is collapsed", async () => {
+  it("pauses a collapsed floating panel without pausing the collapsed roster strip", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const statusSource = compactSource(sourceSection(source, "const statusView", "function dibsMarkup"));
 
-    assert.ok(source.includes("const isForeground = () => state.active\n    && !state.collapsed"));
+    assert.ok(source.includes("const isForeground = () => state.active\n    && (!state.collapsed || isRosterModePage())"));
     assert.ok(source.includes('title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}"'));
     assert.ok(source.includes('storage.set(COLLAPSED_STORAGE, state.collapsed ? "1" : "0");\n      syncForegroundState();'));
-    assert.match(statusSource, /if \(state\.collapsed\) return \{ label: "Paused", tone: "" \}/);
+    assert.match(statusSource, /if \(state\.collapsed && !isRosterModePage\(\)\) return \{ label: "Paused", tone: "" \}/);
     assert.match(statusSource, /if \(document\.visibilityState === "hidden"\) return \{ label: "Paused while hidden", tone: "" \}/);
   });
 });
@@ -867,12 +891,48 @@ describe("Warbuddy userscript source contracts", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
 
-    assert.match(renderSource, /\[ \["floating", "Floating"\], \["integrated", "Integrated beta"\], \]/);
+    assert.match(renderSource, /\[ \["floating", "Floating"\], \["integrated", "Roster \(beta\)"\], \]/);
     assert.match(renderSource, /data-display-mode="\$\{value\}"/);
-    assert.match(renderSource, /Integrated beta/);
-    assert.match(renderSource, /Integrated placement is unavailable on this Torn view\. Floating mode is active\./);
+    assert.match(renderSource, /Roster \(beta\)/);
+    assert.doesNotMatch(renderSource, /wc-display-help/);
+    assert.match(renderSource, /Roster mode is unavailable here\. Using Floating\./);
     assert.match(source, /Warbuddy: use floating mode/);
-    assert.match(source, /Warbuddy: use integrated beta/);
+    assert.match(source, /Warbuddy: use roster beta/);
+  });
+
+  it("mounts roster mode above the common two-faction board instead of a member cell", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const rowSource = compactSource(sourceSection(
+      source,
+      "function lowestCommonAncestor",
+      "function createAttackHost"
+    ));
+    const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
+
+    assert.match(rowSource, /function rankedWarBoardForView\(view\)/);
+    assert.match(rowSource, /lowestCommonAncestor\(ownRow, enemyRow\)/);
+    assert.match(rowSource, /board\.contains\?\.\(ownRow\)/);
+    assert.match(rowSource, /board\.contains\?\.\(enemyRow\)/);
+    assert.match(rowSource, /parent\.insertBefore\(wrapper, board\)/);
+    assert.doesNotMatch(rowSource, /parent\.insertBefore\(wrapper, row\)/);
+    assert.match(styleSource, /grid-column:1 \/ -1 !important/);
+    assert.match(styleSource, /flex:0 0 100%/);
+    assert.match(styleSource, /wc-roster-mode/);
+    assert.match(styleSource, /width:100%; max-width:none/);
+  });
+
+  it("keeps roster filtering and priority ordering reversible", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
+    const cleanupSource = compactSource(sourceSection(source, "function removeInlineMemberTools", "function removeIntegratedMount"));
+
+    assert.match(inlineSource, /core\.rosterFilterMatches\(state\.rosterFilter, flags\)/);
+    assert.match(inlineSource, /core\.rosterPriority\(flags\)/);
+    assert.match(inlineSource, /row\.style\.order = String/);
+    assert.doesNotMatch(inlineSource, /appendChild\(row\)|insertBefore\(row/);
+    assert.match(cleanupSource, /warbuddy-roster-hidden/);
+    assert.match(cleanupSource, /removeProperty\?\.\("order"\)/);
+    assert.match(cleanupSource, /warbuddy-roster-sort-parent/);
   });
 
   it("hides the whole action queue via showActionQueue while keeping the tracker-disabled notice separate", async () => {

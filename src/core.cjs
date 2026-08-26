@@ -42,6 +42,33 @@
   const normalizeDisplayMode = (value) =>
     String(value || "").trim().toLowerCase() === "integrated" ? "integrated" : "floating";
 
+  const normalizeRosterFilter = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return ["watched", "actionable", "retaliations"].includes(normalized) ? normalized : "all";
+  };
+
+  const rosterFilterMatches = (filter, flags = {}) => {
+    switch (normalizeRosterFilter(filter)) {
+      case "watched": return flags.watched === true;
+      case "actionable": return flags.actionable === true || flags.retaliation === true;
+      case "retaliations": return flags.retaliation === true;
+      default: return true;
+    }
+  };
+
+  const rosterPriority = (flags = {}) => {
+    if (flags.retaliation === true) return 0;
+    if (flags.dibsMine === true) return 1;
+    if (flags.actionable === true) return 2;
+    const group = String(flags.targetGroup || "").trim().toLowerCase();
+    if (flags.watched === true && group === "priority") return 3;
+    if (flags.watched === true && group === "chain") return 4;
+    if (flags.watched === true && group === "later") return 5;
+    if (flags.watched === true) return 6;
+    if (flags.dibsTaken === true) return 8;
+    return 7;
+  };
+
   const isFactionPageUrl = (value) => {
     let url;
     try {
@@ -498,9 +525,12 @@
     isRankedWarPageUrl,
     isWarbuddyPageUrl,
     normalizeDisplayMode,
+    normalizeRosterFilter,
     normalizeTargetGroups,
     notificationCandidates,
     profileMemberIdFromUrl,
+    rosterFilterMatches,
+    rosterPriority,
     scoreForFaction,
     toTimestampMs,
   };

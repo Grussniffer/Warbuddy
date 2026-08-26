@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.34";
+  const SCRIPT_VERSION = "0.1.36";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -14,6 +14,9 @@
   const FOCUS_STORAGE = "warbuddy_focus_mode";
   const NOTIFICATION_STORAGE = "warbuddy_notifications";
   const TARGET_GROUP_STORAGE = "warbuddy_target_groups";
+  const ROSTER_CONTROLS_STORAGE = "warbuddy_roster_controls_open";
+  const ROSTER_FILTER_STORAGE = "warbuddy_roster_filter";
+  const ROSTER_SORT_STORAGE = "warbuddy_roster_priority_sort";
   const INTEGRATED_HOST_ID = "warbuddy-integrated-host";
   const INTEGRATED_WRAPPER_ID = "warbuddy-integrated-wrapper";
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
@@ -120,6 +123,9 @@
     displayMode: core.normalizeDisplayMode(storage.get(DISPLAY_MODE_STORAGE, "")),
     panelPlacement: "floating",
     integratedFallback: false,
+    rosterControlsOpen: String(storage.get(ROSTER_CONTROLS_STORAGE, "")) === "1",
+    rosterFilter: core.normalizeRosterFilter(storage.get(ROSTER_FILTER_STORAGE, "")),
+    rosterPrioritySort: String(storage.get(ROSTER_SORT_STORAGE, "")) === "1",
     privacyOpen: false,
     targetsOpen: false,
     targetDraft: [],
@@ -185,17 +191,39 @@
 
   addStyle(`
     #${PANEL_ID} { display:block !important; visibility:visible !important; opacity:1 !important; position:fixed !important; right:10px; right:max(10px,env(safe-area-inset-right)); bottom:10px; bottom:max(10px,env(safe-area-inset-bottom)); z-index:2147483647 !important; width:min(320px,calc(100vw - 20px)); max-height:min(70vh,620px); max-height:min(70dvh,620px); overflow:hidden; border:1px solid #3f3f46; border-radius:7px; background:#111113; color:#f4f4f5; box-shadow:0 12px 32px rgba(0,0,0,.55); font:12px/1.35 Arial,Helvetica,sans-serif; }
-    #${INTEGRATED_WRAPPER_ID} { display:block; width:100%; margin:7px 0; list-style:none; }
-    #${INTEGRATED_HOST_ID} { position:relative; z-index:100; display:block; width:100%; font:12px/1.35 Arial,Helvetica,sans-serif; }
+    #${INTEGRATED_WRAPPER_ID} { position:relative; z-index:1; display:block; width:100%; min-width:0; max-width:100%; flex:0 0 100%; grid-column:1 / -1 !important; clear:both; align-self:stretch; margin:7px 0; list-style:none; }
+    #${INTEGRATED_HOST_ID} { position:relative; z-index:1; display:block; width:100%; min-width:0; max-width:100%; font:12px/1.35 Arial,Helvetica,sans-serif; }
+    #${INTEGRATED_HOST_ID}.wc-rank-host { box-sizing:border-box; }
     #${INTEGRATED_HOST_ID}.wc-attack-host { display:inline-flex; width:auto; margin-left:8px; vertical-align:middle; }
-    #${PANEL_ID}.wc-integrated-inline { position:relative !important; inset:auto !important; width:100%; max-height:min(62vh,620px); max-height:min(62dvh,620px); margin:0; }
-    #${PANEL_ID}.wc-integrated-inline .wc-body { max-height:calc(min(62vh,620px) - 42px); max-height:calc(min(62dvh,620px) - 42px); }
-    #${PANEL_ID}.wc-integrated-inline.wc-collapsed { width:100%; min-width:0; border-radius:5px; }
-    #${PANEL_ID}.wc-integrated-inline.wc-collapsed .wc-header { border-radius:5px; }
+    #${PANEL_ID}.wc-integrated-inline.wc-roster-mode { position:relative !important; inset:auto !important; width:100%; max-width:none; max-height:none; margin:0; border-color:#4d612a; border-radius:3px; box-shadow:0 2px 8px rgba(0,0,0,.3); }
+    #${PANEL_ID}.wc-roster-mode .wc-body { max-height:min(55vh,520px); max-height:min(55dvh,520px); border-top:1px solid #3f4f25; background:#202020; }
+    #${PANEL_ID}.wc-roster-mode:not(.wc-roster-open) .wc-body { display:none; }
+    #${PANEL_ID} .wc-roster-summary { display:flex; min-height:34px; align-items:center; gap:8px; background:linear-gradient(180deg,#5a7625,#41571a); color:#f4f4f5; padding:0 8px; }
+    #${PANEL_ID} .wc-roster-summary-button { display:flex; min-width:0; flex:1; align-items:center; gap:7px; border:0; background:transparent; color:inherit; padding:7px 0; text-align:left; font:inherit; cursor:pointer; }
+    #${PANEL_ID} .wc-roster-chevron { width:10px; flex:0 0 10px; color:#f4f4f5; }
+    #${PANEL_ID} .wc-roster-name { flex:0 0 auto; font-weight:700; }
+    #${PANEL_ID} .wc-roster-beta { flex:0 0 auto; border-radius:3px; background:rgba(0,0,0,.28); color:#e4e4e7; padding:1px 4px; font-size:9px; font-weight:700; text-transform:uppercase; }
+    #${PANEL_ID} .wc-roster-matchup { min-width:0; overflow:hidden; color:#e4e4e7; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+    #${PANEL_ID} .wc-roster-status { display:inline-flex; flex:0 0 auto; align-items:center; gap:4px; font-size:10px; font-weight:700; }
+    #${PANEL_ID} .wc-roster-counts { display:flex; flex:0 0 auto; align-items:center; gap:7px; color:#e4e4e7; font-size:10px; }
+    #${PANEL_ID} .wc-roster-controls { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px; border:1px solid #3f3f46; border-radius:4px; background:#18181b; }
+    #${PANEL_ID} .wc-roster-filters { display:flex; min-width:0; flex-wrap:wrap; gap:4px; }
+    #${PANEL_ID} .wc-roster-filter { border:1px solid #52525b; border-radius:3px; background:#27272a; color:#d4d4d8; padding:4px 7px; font:inherit; font-weight:700; cursor:pointer; }
+    #${PANEL_ID} .wc-roster-filter.active { border-color:#84a83b; background:#405719; color:#fff; }
+    #${PANEL_ID} .wc-roster-sort { display:inline-flex; flex:0 0 auto; align-items:center; gap:5px; color:#d4d4d8; font-weight:700; white-space:nowrap; }
+    #${PANEL_ID} .wc-roster-sort input { margin:0; accent-color:#84a83b; }
     #${PANEL_ID}.wc-integrated-toolbar { position:absolute !important; top:calc(100% + 6px) !important; right:0 !important; bottom:auto !important; left:auto !important; width:min(320px,92vw); }
     #${PANEL_ID}.wc-integrated-toolbar.wc-collapsed { position:relative !important; top:auto !important; right:auto !important; width:auto; }
     #${PANEL_ID}.wc-integrated-inline .wc-header, #${PANEL_ID}.wc-integrated-toolbar .wc-header { cursor:default; touch-action:auto; }
     #${PANEL_ID} .wc-integrated-notice { margin-bottom:6px; padding:5px 6px; border:1px solid #3f3f46; border-radius:5px; background:#18181b; color:#a1a1aa; }
+    .warbuddy-roster-hidden { display:none !important; }
+    .warbuddy-roster-sort-parent { display:flex !important; flex-direction:column !important; }
+    .warbuddy-roster-sort-parent > [data-warbuddy-member-row] { width:100%; }
+    [data-warbuddy-member-row].warbuddy-row-retal { box-shadow:inset 3px 0 #38bdf8 !important; }
+    [data-warbuddy-member-row].warbuddy-row-actionable { box-shadow:inset 3px 0 #ef4444; }
+    a.warbuddy-attack-dibs-mine { border-color:#10b981 !important; background:#047857 !important; color:#ecfdf5 !important; }
+    a.warbuddy-attack-dibs-taken { border-color:#71717a !important; background:#52525b !important; color:#fafafa !important; opacity:.78; }
+    a.warbuddy-attack-retal { box-shadow:0 0 0 2px rgba(56,189,248,.55) !important; }
     .${INLINE_TOOLS_CLASS} { display:inline-flex; align-items:center; gap:2px; margin-left:4px; vertical-align:middle; }
     .${INLINE_TOOLS_CLASS} button, .${INLINE_TOOLS_CLASS} a { display:inline-flex; width:18px; height:18px; align-items:center; justify-content:center; border:1px solid transparent; border-radius:3px; background:transparent; color:#a1a1aa; padding:0; text-decoration:none; font:12px/1 Arial,Helvetica,sans-serif; cursor:pointer; }
     .${INLINE_TOOLS_CLASS} button:hover, .${INLINE_TOOLS_CLASS} button:focus-visible, .${INLINE_TOOLS_CLASS} a:hover, .${INLINE_TOOLS_CLASS} a:focus-visible { border-color:#52525b; background:#27272a; color:#f4f4f5; outline:0; }
@@ -203,7 +231,7 @@
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.free { color:#d4d4d8; }
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.mine { color:#10b981; }
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.taken { color:#a1a1aa; }
-    .${INLINE_TOOLS_CLASS} .wc-inline-retal { color:#38bdf8; }
+    .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
     #${PANEL_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${PANEL_ID}.wc-collapsed .wc-body { display:none; }
@@ -305,15 +333,14 @@
     #${PANEL_ID} .wc-display-modes { display:grid; grid-template-columns:1fr 1fr; gap:4px; }
     #${PANEL_ID} .wc-display-mode { border:1px solid #3f3f46; border-radius:4px; background:#18181b; color:#a1a1aa; padding:5px 6px; font:inherit; font-weight:700; cursor:pointer; }
     #${PANEL_ID} .wc-display-mode.active { border-color:#047857; background:#064e3b; color:#d1fae5; }
-    #${PANEL_ID} .wc-display-help { margin-top:4px; color:#71717a; font-size:10px; }
     #${PANEL_ID} .wc-stale { margin-bottom:6px; padding:5px 6px; border:1px solid #78350f; border-radius:5px; background:#29170b; color:#fde68a; }
     #${PANEL_ID} .wc-queue-details { overflow:hidden; }
     #${PANEL_ID} .wc-queue-details > .wc-section { margin:0; border:0; border-top:1px solid #27272a; border-radius:0; }
     #${PANEL_ID} .wc-more-actions { margin:0; border:0; border-top:1px solid #27272a; border-radius:0; }
     #${PANEL_ID} .wc-privacy { padding:0 6px 6px; }
     #${PANEL_ID} .wc-private-actions { display:flex; gap:5px; padding:0 6px 6px; }
-    @media (max-width:520px) { #${PANEL_ID} { right:6px; right:max(6px,env(safe-area-inset-right)); bottom:6px; bottom:max(6px,env(safe-area-inset-bottom)); width:calc(100vw - 12px); width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-collapsed { width:auto; } #${PANEL_ID}.wc-integrated-inline { width:100%; max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-integrated-inline.wc-collapsed { width:100%; } #${INTEGRATED_HOST_ID}.wc-attack-host #${PANEL_ID}:not(.wc-collapsed) { position:fixed !important; top:auto !important; right:6px !important; right:max(6px,env(safe-area-inset-right)) !important; bottom:6px !important; bottom:max(6px,env(safe-area-inset-bottom)) !important; left:auto !important; width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); } #${PANEL_ID} .wc-body { max-height:calc(58vh - 42px); max-height:calc(58dvh - 42px); padding-bottom:7px; padding-bottom:max(7px,env(safe-area-inset-bottom)); } #${PANEL_ID} .wc-item-detail { white-space:normal; } }
-    @media (pointer:coarse) { #${PANEL_ID} .wc-button, #${PANEL_ID} .wc-link { min-height:40px; padding:8px 10px; } #${PANEL_ID} .wc-icon { width:40px; padding:0; } #${PANEL_ID} .wc-dibs, #${PANEL_ID} .wc-dibs-close { width:40px; height:40px; font-size:16px; } #${PANEL_ID} .wc-loadout-button { width:40px; height:40px; } #${PANEL_ID} .wc-target-option-row { min-height:44px; } #${PANEL_ID} .wc-target-option input { width:18px; height:18px; } #${PANEL_ID} summary { min-height:40px; padding:11px 8px; } .${INLINE_TOOLS_CLASS} button, .${INLINE_TOOLS_CLASS} a { width:30px; height:30px; } }
+    @media (max-width:520px) { #${PANEL_ID} { right:6px; right:max(6px,env(safe-area-inset-right)); bottom:6px; bottom:max(6px,env(safe-area-inset-bottom)); width:calc(100vw - 12px); width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-collapsed { width:auto; } #${PANEL_ID}.wc-integrated-inline { width:100%; max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-integrated-inline.wc-collapsed { width:100%; } #${PANEL_ID}.wc-roster-mode { max-height:none; } #${PANEL_ID}.wc-roster-mode .wc-body { max-height:58vh; max-height:58dvh; } #${PANEL_ID} .wc-roster-summary { gap:5px; padding:0 6px; } #${PANEL_ID} .wc-roster-matchup { display:none; } #${PANEL_ID} .wc-roster-counts span:first-child { display:none; } #${PANEL_ID} .wc-roster-controls { align-items:stretch; flex-direction:column; } #${PANEL_ID} .wc-roster-sort { min-height:34px; } #${INTEGRATED_HOST_ID}.wc-attack-host #${PANEL_ID}:not(.wc-collapsed) { position:fixed !important; top:auto !important; right:6px !important; right:max(6px,env(safe-area-inset-right)) !important; bottom:6px !important; bottom:max(6px,env(safe-area-inset-bottom)) !important; left:auto !important; width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); } #${PANEL_ID} .wc-body { max-height:calc(58vh - 42px); max-height:calc(58dvh - 42px); padding-bottom:7px; padding-bottom:max(7px,env(safe-area-inset-bottom)); } #${PANEL_ID} .wc-item-detail { white-space:normal; } }
+    @media (pointer:coarse) { #${PANEL_ID} .wc-button, #${PANEL_ID} .wc-link { min-height:40px; padding:8px 10px; } #${PANEL_ID} .wc-icon { width:40px; padding:0; } #${PANEL_ID} .wc-dibs, #${PANEL_ID} .wc-dibs-close { width:40px; height:40px; font-size:16px; } #${PANEL_ID} .wc-loadout-button { width:40px; height:40px; } #${PANEL_ID} .wc-target-option-row { min-height:44px; } #${PANEL_ID} .wc-target-option input { width:18px; height:18px; } #${PANEL_ID} summary { min-height:40px; padding:11px 8px; } .${INLINE_TOOLS_CLASS} button, .${INLINE_TOOLS_CLASS} a { width:30px; height:30px; } .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:30px; padding:0 5px; } }
   `);
 
   const normalizeResponse = (response) => {
@@ -527,8 +554,10 @@
     state.targetQuickError = "";
     closeDibsDetails();
   };
+  const isRosterModePage = () => state.displayMode === "integrated"
+    && core.isRankedWarPageUrl(window.location.href);
   const isForeground = () => state.active
-    && !state.collapsed
+    && (!state.collapsed || isRosterModePage())
     && document.visibilityState !== "hidden"
     && (typeof navigator === "undefined" || navigator.onLine !== false);
   const backendUrl = (path) => `${BACKEND_BASE_URL.replace(/\/$/, "")}${path}`;
@@ -592,6 +621,21 @@
 
   function removeInlineMemberTools() {
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((element) => element.remove());
+    document.querySelectorAll?.("[data-warbuddy-member-row]").forEach((row) => {
+      row.classList.remove("warbuddy-roster-hidden", "warbuddy-row-retal", "warbuddy-row-actionable");
+      row.style?.removeProperty?.("order");
+      delete row.dataset.warbuddyMemberRow;
+      delete row.dataset.warbuddyMemberId;
+      delete row.dataset.warbuddyPriority;
+    });
+    document.querySelectorAll?.(".warbuddy-roster-sort-parent").forEach((parent) => {
+      parent.classList.remove("warbuddy-roster-sort-parent");
+    });
+    document.querySelectorAll?.("[data-warbuddy-attack-state]").forEach((link) => {
+      link.classList.remove("warbuddy-attack-dibs-mine", "warbuddy-attack-dibs-taken", "warbuddy-attack-retal");
+      link.title = String(link.title || "").replace(/\s*-?\s*Warbuddy:.*$/i, "").trim();
+      delete link.dataset.warbuddyAttackState;
+    });
   }
 
   function removeIntegratedMount(preservePanel = true) {
@@ -603,38 +647,117 @@
     else host?.remove();
   }
 
-  function enemyProfileAnchors(view) {
-    const enemyIds = new Set((view?.enemyRoster || [])
+  function rosterProfileAnchors(roster) {
+    const memberIds = new Set((Array.isArray(roster) ? roster : [])
       .map((member) => Number(member?.member_id || 0))
       .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
-    if (!enemyIds.size) return [];
+    if (!memberIds.size) return [];
     const seen = new Set();
     return Array.from(document.querySelectorAll?.("a[href*='profiles.php']") || []).filter((anchor) => {
       if (anchor.closest?.(`#${PANEL_ID}, #${INTEGRATED_HOST_ID}, .${INLINE_TOOLS_CLASS}`)) return false;
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
-      if (!enemyIds.has(memberId) || seen.has(memberId)) return false;
+      if (!memberIds.has(memberId) || seen.has(memberId)) return false;
       seen.add(memberId);
       return true;
     });
   }
 
-  function createRankedWarHost(anchor) {
-    const row = anchor?.closest?.("li, tr, [role='row'], [class*='member'], [class*='enemy'], [class*='row']")
-      || anchor?.parentElement;
-    const parent = row?.parentNode;
-    if (!row || !parent || row === document.body || row === document.documentElement) return null;
+  function enemyProfileAnchors(view) {
+    const enemyIds = new Set((view?.enemyRoster || [])
+      .map((member) => Number(member?.member_id || 0))
+      .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
+    const seen = new Set();
+    return Array.from(document.querySelectorAll?.("a[href*='profiles.php']") || []).filter((anchor) => {
+      if (anchor.closest?.(`#${PANEL_ID}, #${INTEGRATED_HOST_ID}, .${INLINE_TOOLS_CLASS}`)) return false;
+      const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
+      if (!enemyIds.has(memberId) || seen.has(memberId) || !rankedWarRowForAnchor(anchor)) return false;
+      seen.add(memberId);
+      return true;
+    });
+  }
 
-    const rowTag = String(row.tagName || "").toUpperCase();
-    const wrapper = document.createElement(rowTag === "TR" ? "tr" : rowTag === "LI" ? "li" : "div");
+  function rankedWarRowForAnchor(anchor) {
+    let candidate = anchor?.parentElement;
+    for (let depth = 0; candidate && depth < 10; depth += 1, candidate = candidate.parentElement) {
+      if (candidate === document.body || candidate === document.documentElement) return null;
+      const profileLinks = Array.from(candidate.querySelectorAll?.("a[href*='profiles.php']") || [])
+        .filter((link) => core.profileMemberIdFromUrl(link.getAttribute?.("href") || link.href || "") > 0);
+      if (profileLinks.length > 1) return null;
+      if (profileLinks.length === 1 && candidate.querySelector?.("a[href*='sid=attack']")) return candidate;
+    }
+
+    return null;
+  }
+
+  function rankedWarOwnRowForAnchor(anchor) {
+    let candidate = anchor?.parentElement;
+    let singleMemberContainer = null;
+    for (let depth = 0; candidate && depth < 10; depth += 1, candidate = candidate.parentElement) {
+      if (candidate === document.body || candidate === document.documentElement) break;
+      const profileLinks = Array.from(candidate.querySelectorAll?.("a[href*='profiles.php']") || [])
+        .filter((link) => core.profileMemberIdFromUrl(link.getAttribute?.("href") || link.href || "") > 0);
+      if (profileLinks.length > 1) return singleMemberContainer;
+      if (profileLinks.length === 1) singleMemberContainer = candidate;
+    }
+    return singleMemberContainer;
+  }
+
+  function lowestCommonAncestor(left, right) {
+    if (!left || !right) return null;
+    const leftAncestors = new Set();
+    for (let candidate = left, depth = 0; candidate && depth < 16; candidate = candidate.parentElement, depth += 1) {
+      leftAncestors.add(candidate);
+    }
+    for (let candidate = right, depth = 0; candidate && depth < 16; candidate = candidate.parentElement, depth += 1) {
+      if (leftAncestors.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  function rankedWarBoardForView(view) {
+    const expectedMembers = Number(view?.ownRoster?.length || 0) + Number(view?.enemyRoster?.length || 0);
+    const invalidParents = new Set(["TABLE", "TBODY", "THEAD", "TFOOT", "TR"]);
+    let best = null;
+    let bestProfileCount = Number.POSITIVE_INFINITY;
+    for (const ownAnchor of rosterProfileAnchors(view?.ownRoster).slice(0, 16)) {
+      const ownRow = rankedWarOwnRowForAnchor(ownAnchor);
+      if (!ownRow) continue;
+      for (const enemyAnchor of enemyProfileAnchors(view).slice(0, 8)) {
+        const enemyRow = rankedWarRowForAnchor(enemyAnchor);
+        let board = lowestCommonAncestor(ownRow, enemyRow);
+        if (!board || board === document.body || board === document.documentElement) continue;
+        while (board?.parentElement && invalidParents.has(String(board.parentElement.tagName || "").toUpperCase())) {
+          board = board.parentElement;
+        }
+        if (!board?.parentElement || board === document.body || board === document.documentElement) continue;
+        if (!board.contains?.(ownRow) || !board.contains?.(enemyRow)) continue;
+        const profileCount = Array.from(board.querySelectorAll?.("a[href*='profiles.php']") || [])
+          .filter((anchor) => core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "") > 0)
+          .length;
+        if (profileCount < 2 || profileCount > Math.max(220, expectedMembers + 24)) continue;
+        if (profileCount < bestProfileCount) {
+          best = board;
+          bestProfileCount = profileCount;
+        }
+      }
+    }
+    return best;
+  }
+
+  function createRankedWarHost(view) {
+    const board = rankedWarBoardForView(view);
+    const parent = board?.parentNode;
+    if (!board || !parent) return null;
+
+    const wrapper = document.createElement("div");
     wrapper.id = INTEGRATED_WRAPPER_ID;
     wrapper.className = "warbuddy-integrated-rank-host";
-    const host = document.createElement(rowTag === "TR" ? "td" : "div");
+    const host = document.createElement("div");
     host.id = INTEGRATED_HOST_ID;
     host.className = "wc-rank-host";
     host.dataset.placement = "rank";
-    if (rowTag === "TR") host.colSpan = 99;
     wrapper.appendChild(host);
-    parent.insertBefore(wrapper, row);
+    parent.insertBefore(wrapper, board);
     return host;
   }
 
@@ -671,11 +794,8 @@
     }
 
     if (desiredPlacement === "rank") {
-      const anchor = enemyProfileAnchors(view)[0];
-      if (anchor) {
-        host ||= createRankedWarHost(anchor);
-        if (host) return { mount: host, placement: "inline", fallback: false };
-      }
+      host ||= createRankedWarHost(view);
+      if (host) return { mount: host, placement: "inline", fallback: false };
     }
 
     removeIntegratedMount(true);
@@ -1380,13 +1500,13 @@
     }).filter((item) => genericSuggestionsEnabled || !String(item.key || "").startsWith("online-")), state.targetGroups);
     const retaliation = core.activeRetaliations(state.retaliation, Math.floor(state.nowMs / 1000));
     const focusItems = core.buildFocusQueue({ actions, retaliations: retaliation, limit: 3 });
-    return { ownFactionId, ownFactionName, enemyFactionId, enemyFactionName, enemyRoster, actions, retaliation, focusItems, dibs: state.dibs, actionQueueEnabled };
+    return { ownFactionId, ownFactionName, enemyFactionId, enemyFactionName, ownRoster, enemyRoster, actions, retaliation, focusItems, dibs: state.dibs, actionQueueEnabled };
   }
 
   const statusView = () => {
     if (!getStoredKey()) return { label: "API key needed", tone: "" };
     if (state.authTerminal) return { label: "Key needs attention", tone: "wait" };
-    if (state.collapsed) return { label: "Paused", tone: "" };
+    if (state.collapsed && !isRosterModePage()) return { label: "Paused", tone: "" };
     if (!isOnline()) return { label: "Offline", tone: "wait" };
     if (document.visibilityState === "hidden") return { label: "Paused while hidden", tone: "" };
     if (transportIsLive() && state.settings?.enabled !== false && currentEnemyFactionId() && !currentEnemyRosterIsFresh()) return { label: "Syncing targets", tone: "wait" };
@@ -1401,7 +1521,6 @@
 
   function syncIntegratedMemberTools(view = sessionView()) {
     const canDecorate = state.active
-      && !state.collapsed
       && state.displayMode === "integrated"
       && core.isRankedWarPageUrl(window.location.href)
       && Array.isArray(view?.enemyRoster)
@@ -1414,7 +1533,13 @@
     const members = new Map(view.enemyRoster.map((member) => [Number(member?.member_id || 0), member]));
     const watchedIds = new Set(savedTargetIds());
     const retaliations = new Map((view.retaliation || []).map((attack) => [Number(attack?.attackerId || 0), attack]));
+    const actionableIds = new Set((view.actions || [])
+      .map((action) => Number(action?.memberId || 0))
+      .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
     const keep = new Set();
+    const keepRows = new Set();
+    const keepAttackLinks = new Set();
+    const decoratedRows = [];
 
     for (const anchor of enemyProfileAnchors(view)) {
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
@@ -1460,8 +1585,45 @@
       const retaliationLabel = retaliation
         ? `Retaliation - ${core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)} left`
         : "";
+      const row = rankedWarRowForAnchor(anchor);
+      const actionable = actionableIds.has(memberId) || !!retaliation;
+      const flags = {
+        watched,
+        actionable,
+        retaliation: !!retaliation,
+        dibsMine: isMine,
+        dibsTaken: !!claim && !isMine,
+        targetGroup: targetGroupFor(memberId),
+      };
 
-      tools.innerHTML = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && (claim || eligibility?.eligible) ? `<button type="button" class="wc-inline-dibs ${dibsTone}" data-inline-action="${canClaim ? "claim" : "inspect"}" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">&#8634;</a>` : ""}`;
+      if (row) {
+        keepRows.add(row);
+        decoratedRows.push(row);
+        row.dataset.warbuddyMemberRow = "1";
+        row.dataset.warbuddyMemberId = String(memberId);
+        row.classList.toggle("warbuddy-row-retal", flags.retaliation);
+        row.classList.toggle("warbuddy-row-actionable", flags.actionable && !flags.retaliation);
+        row.classList.toggle("warbuddy-roster-hidden", !core.rosterFilterMatches(state.rosterFilter, flags));
+        row.dataset.warbuddyPriority = String(core.rosterPriority(flags));
+      }
+
+      const attackLink = row?.querySelector?.("a[href*='sid=attack']");
+      if (attackLink) {
+        keepAttackLinks.add(attackLink);
+        const baseTitle = String(attackLink.title || "").replace(/\s*-?\s*Warbuddy:.*$/i, "").trim();
+        attackLink.dataset.warbuddyAttackState = isMine ? "mine" : claim ? "taken" : retaliation ? "retaliation" : "free";
+        attackLink.classList.toggle("warbuddy-attack-dibs-mine", isMine);
+        attackLink.classList.toggle("warbuddy-attack-dibs-taken", !!claim && !isMine);
+        attackLink.classList.toggle("warbuddy-attack-retal", !!retaliation);
+        attackLink.title = claim || retaliation
+          ? [baseTitle, `Warbuddy: ${claim ? dibsLabel : retaliationLabel}`].filter(Boolean).join(" - ")
+          : baseTitle;
+      }
+
+      const retaliationRemaining = retaliation
+        ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
+        : "";
+      tools.innerHTML = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && (claim || eligibility?.eligible) ? `<button type="button" class="wc-inline-dibs ${dibsTone}" data-inline-action="${canClaim ? "claim" : "inspect"}" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
 
       tools.querySelector?.('[data-inline-action="watch"]')?.addEventListener("click", (event) => {
         event.preventDefault();
@@ -1475,8 +1637,48 @@
       });
     }
 
+    let activeSortParent = null;
+    if (state.rosterPrioritySort && decoratedRows.length > 1) {
+      const parents = new Set(decoratedRows.map((row) => row.parentElement).filter(Boolean));
+      if (parents.size === 1) {
+        const parent = parents.values().next().value;
+        const parentTag = String(parent.tagName || "").toUpperCase();
+        const rowSet = new Set(decoratedRows);
+        const memberChildren = Array.from(parent.children || []).filter((child) => (
+          child.querySelector?.("a[href*='profiles.php']")
+        ));
+        if (["DIV", "UL", "OL"].includes(parentTag) && memberChildren.every((child) => rowSet.has(child))) {
+          activeSortParent = parent;
+          parent.classList.add("warbuddy-roster-sort-parent");
+          decoratedRows.forEach((row) => {
+            row.style.order = String(10 + Number(row.dataset.warbuddyPriority || 7));
+          });
+        }
+      }
+    }
+
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((tools) => {
       if (!keep.has(Number(tools.dataset?.memberId || 0))) tools.remove();
+    });
+    document.querySelectorAll?.("[data-warbuddy-member-row]").forEach((row) => {
+      if (keepRows.has(row)) {
+        if (!activeSortParent) row.style?.removeProperty?.("order");
+        return;
+      }
+      row.classList.remove("warbuddy-roster-hidden", "warbuddy-row-retal", "warbuddy-row-actionable");
+      row.style?.removeProperty?.("order");
+      delete row.dataset.warbuddyMemberRow;
+      delete row.dataset.warbuddyMemberId;
+      delete row.dataset.warbuddyPriority;
+    });
+    document.querySelectorAll?.(".warbuddy-roster-sort-parent").forEach((parent) => {
+      if (parent !== activeSortParent) parent.classList.remove("warbuddy-roster-sort-parent");
+    });
+    document.querySelectorAll?.("[data-warbuddy-attack-state]").forEach((link) => {
+      if (keepAttackLinks.has(link)) return;
+      link.classList.remove("warbuddy-attack-dibs-mine", "warbuddy-attack-dibs-taken", "warbuddy-attack-retal");
+      link.title = String(link.title || "").replace(/\s*-?\s*Warbuddy:.*$/i, "").trim();
+      delete link.dataset.warbuddyAttackState;
     });
   }
 
@@ -2008,9 +2210,12 @@
     if (panel.parentNode !== mount) mount.appendChild(panel);
     state.panelPlacement = mountState.placement;
     state.integratedFallback = mountState.fallback;
+    const rosterMode = mountState.placement === "inline" && isRosterModePage();
     panel.classList.toggle("wc-integrated-inline", mountState.placement === "inline");
     panel.classList.toggle("wc-integrated-toolbar", mountState.placement === "toolbar");
     panel.classList.toggle("wc-integrated-fallback", mountState.fallback);
+    panel.classList.toggle("wc-roster-mode", rosterMode);
+    panel.classList.toggle("wc-roster-open", rosterMode && state.rosterControlsOpen);
     if (mountState.placement !== "floating") clearPanelPositionStyles(panel);
     const focusSnapshot = capturePanelFocus(panel);
     const currentBody = panel.querySelector(".wc-body");
@@ -2027,7 +2232,7 @@
     if (moreActionsDisclosure) state.moreActionsOpen = moreActionsDisclosure.open;
     const optionsDisclosure = panel.querySelector('[data-section="options"]');
     if (optionsDisclosure) state.optionsOpen = optionsDisclosure.open;
-    panel.classList.toggle("wc-collapsed", state.collapsed);
+    panel.classList.toggle("wc-collapsed", !rosterMode && state.collapsed);
 
     const status = statusView();
     const savedKey = getStoredKey();
@@ -2052,6 +2257,19 @@
     const matchupTitle = view.enemyFactionId
       ? `${ownFactionLabel} (${view.ownFactionId}) vs ${enemyFactionLabel} (${view.enemyFactionId})`
       : ownFactionLabel;
+    const actionableMemberIds = new Set([
+      ...(view.actions || []).map((action) => Number(action?.memberId || 0)),
+      ...(view.retaliation || []).map((attack) => Number(attack?.attackerId || 0)),
+    ].filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
+    const rosterFilterOptions = [
+      ["all", "All"],
+      ["watched", "Watched"],
+      ["actionable", "Actionable"],
+      ["retaliations", "Retals"],
+    ].map(([value, label]) => `<button type="button" class="wc-roster-filter${state.rosterFilter === value ? " active" : ""}" data-roster-filter="${value}" aria-pressed="${state.rosterFilter === value ? "true" : "false"}">${label}</button>`).join("");
+    const rosterControls = rosterMode
+      ? `<div class="wc-roster-controls"><div class="wc-roster-filters" role="group" aria-label="Filter enemy roster">${rosterFilterOptions}</div><label class="wc-roster-sort"><input type="checkbox" data-field="roster-priority-sort"${state.rosterPrioritySort ? " checked" : ""}>Warbuddy priority</label></div>`
+      : "";
 
     const targetIds = state.targetsOpen || state.targetsDirty ? normalizeTargetIds(state.targetDraft) : savedTargetIds();
     const targetIdSet = new Set(targetIds);
@@ -2087,10 +2305,10 @@
     ].map(([kind, label]) => `<label class="wc-option"><input type="checkbox" data-notification-kind="${kind}"${state.notificationSettings[kind] ? " checked" : ""}${notificationSupported ? "" : " disabled"}>${label}</label>`).join("");
     const displayModeOptions = [
       ["floating", "Floating"],
-      ["integrated", "Integrated beta"],
+      ["integrated", "Roster (beta)"],
     ].map(([value, label]) => `<button type="button" class="wc-display-mode${state.displayMode === value ? " active" : ""}" data-display-mode="${value}" aria-pressed="${state.displayMode === value ? "true" : "false"}">${label}</button>`).join("");
     const optionsSection = savedKey
-      ? `<details data-section="options"${state.optionsOpen ? " open" : ""}><summary>Options</summary><div class="wc-display-setting"><div class="wc-display-label">Display</div><div class="wc-display-modes" role="group" aria-label="Warbuddy display mode">${displayModeOptions}</div><div class="wc-display-help">Integrated beta embeds Warbuddy into supported Torn war and attack views. It falls back to floating if Torn has no safe placement.</div></div><div class="wc-options">${notificationOptions}</div>${notificationSupported ? "" : `<div class="wc-privacy">Desktop notifications are not available in this userscript host.</div>`}</details>`
+      ? `<details data-section="options"${state.optionsOpen ? " open" : ""}><summary>Options</summary><div class="wc-display-setting"><div class="wc-display-label">Display</div><div class="wc-display-modes" role="group" aria-label="Warbuddy display mode">${displayModeOptions}</div></div><div class="wc-options">${notificationOptions}</div>${notificationSupported ? "" : `<div class="wc-privacy">Desktop notifications are not available in this userscript host.</div>`}</details>`
       : "";
 
     const showKeyEditor = !savedKey || state.keyEditorOpen || state.authTerminal;
@@ -2098,12 +2316,8 @@
       ? `${state.keyEditorError ? `<div class="wc-error" role="alert">${escapeHtml(state.keyEditorError)}</div>` : ""}<div class="wc-row"><input class="wc-input wc-secret-input" data-field="api-key" data-focus-key="api-key" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" aria-label="Torn API key" placeholder="${savedKey ? "Replacement Torn API key" : "Torn API key"}" value="${escapeHtml(state.keyDraft)}"${state.keySaving ? " disabled" : ""}><button class="wc-button primary" data-action="connect"${state.keySaving || mutationBusy ? " disabled" : ""}>${state.keySaving ? "Checking..." : savedKey ? "Replace" : "Connect"}</button>${savedKey && !state.authTerminal ? `<button class="wc-button" data-action="cancel-key"${state.keySaving ? " disabled" : ""}>Cancel</button>` : ""}</div>`
       : "";
 
-    panel.innerHTML = `<div class="wc-header">
-      <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel ? `<div class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</div>` : ""}</div>
-      <button class="wc-button wc-icon" data-action="collapse" aria-expanded="${state.collapsed ? "false" : "true"}" aria-label="${state.collapsed ? "Expand and resume Warbuddy" : "Collapse and pause Warbuddy"}" title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}">${state.collapsed ? "+" : "-"}</button>
-    </div>
-    <div class="wc-body">
-      ${state.integratedFallback ? `<div class="wc-integrated-notice" role="status">Integrated placement is unavailable on this Torn view. Floating mode is active.</div>` : ""}
+    const panelBody = `${rosterControls}
+      ${state.integratedFallback ? `<div class="wc-integrated-notice" role="status">Roster mode is unavailable here. Using Floating.</div>` : ""}
       ${visibleError ? `<div class="wc-error" role="alert">${escapeHtml(visibleError)}</div>` : ""}
       ${state.dibsError ? `<div class="wc-error" role="alert">${escapeHtml(state.dibsError)}</div>` : ""}
       ${hasCachedData && (!transportIsLive() || dataIsStale() || (state.settings?.enabled !== false && currentEnemyFactionId() && !currentEnemyRosterIsFresh())) ? `<div class="wc-stale" role="status">Showing cached data from ${escapeHtml(core.duration(liveDataAgeMs()))} ago. Live-only suggestions and changes are paused.</div>` : ""}
@@ -2112,7 +2326,13 @@
       ${watchedTargetsSection}
       ${optionsSection}
       <details data-section="privacy"${state.privacyOpen ? " open" : ""}><summary>Privacy</summary><div class="wc-privacy">The key stays in your userscript storage. Torn and the backend use it to verify your profile and faction. Warbuddy records your version, connection mode, and last use for faction admins. Its scoped session can save only your watched-target list and Dibs actions.</div>${savedKey ? `<div class="wc-private-actions"><button class="wc-button" data-action="refresh"${mutationBusy || state.keySaving ? " disabled" : ""}>Reconnect</button><button class="wc-button" data-action="change-key"${mutationBusy || state.keySaving ? " disabled" : ""}>Change key</button><button class="wc-button" data-action="forget"${mutationBusy || state.keySaving ? " disabled" : ""}>${state.forgetConfirm ? "Confirm forget" : "Forget key"}</button></div>` : ""}</details>
+    `;
+    const standardHeader = `<div class="wc-header">
+      <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel ? `<div class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</div>` : ""}</div>
+      <button class="wc-button wc-icon" data-action="collapse" aria-expanded="${state.collapsed ? "false" : "true"}" aria-label="${state.collapsed ? "Expand and resume Warbuddy" : "Collapse and pause Warbuddy"}" title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}">${state.collapsed ? "+" : "-"}</button>
     </div>`;
+    const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts"><span>Watched ${savedTargetIds().length}</span><span>Ready ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
+    panel.innerHTML = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
 
     const nextBody = panel.querySelector(".wc-body");
     if (nextBody) {
@@ -2150,6 +2370,25 @@
     applyStoredPanelPosition();
     attachPanelDragHandler(panel);
 
+    panel.querySelector('[data-action="toggle-roster-controls"]')?.addEventListener("click", () => {
+      state.rosterControlsOpen = !state.rosterControlsOpen;
+      storage.set(ROSTER_CONTROLS_STORAGE, state.rosterControlsOpen ? "1" : "0");
+      scheduleRender();
+    });
+    panel.querySelectorAll("[data-roster-filter]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        state.rosterFilter = core.normalizeRosterFilter(event.currentTarget?.dataset?.rosterFilter);
+        storage.set(ROSTER_FILTER_STORAGE, state.rosterFilter);
+        syncIntegratedMemberTools(view);
+        scheduleRender();
+      });
+    });
+    panel.querySelector('[data-field="roster-priority-sort"]')?.addEventListener("change", (event) => {
+      state.rosterPrioritySort = event.currentTarget.checked === true;
+      storage.set(ROSTER_SORT_STORAGE, state.rosterPrioritySort ? "1" : "0");
+      syncIntegratedMemberTools(view);
+      scheduleRender();
+    });
     panel.querySelector('[data-action="collapse"]')?.addEventListener("click", () => {
       state.collapsed = !state.collapsed;
       storage.set(COLLAPSED_STORAGE, state.collapsed ? "1" : "0");
@@ -2467,7 +2706,7 @@
   });
 
   registerMenuCommand("Warbuddy: use floating mode", () => setDisplayMode("floating"));
-  registerMenuCommand("Warbuddy: use integrated beta", () => setDisplayMode("integrated"));
+  registerMenuCommand("Warbuddy: use roster beta", () => setDisplayMode("integrated"));
 
   registerMenuCommand("Warbuddy: diagnostics", () => {
     const routeMatches = core.isWarbuddyPageUrl(window.location.href);

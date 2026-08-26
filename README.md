@@ -1,11 +1,12 @@
 # Warbuddy
 
-## 0.1.34
+## 0.1.36
 
 - Keeps the current floating panel as the default presentation.
-- Adds an opt-in **Integrated beta** mode under Privacy and userscript menu commands.
-- Embeds the existing panel into supported Torn war and attack views without opening another socket or poller.
-- Adds compact Watch, Dibs, and retaliation actions beside matched enemy profile links on the ranked-war page.
+- Replaces **Integrated (beta)** with an opt-in **Roster (beta)** strip above both ranked-war faction lists.
+- Keeps the strip collapsed by default while live Watch, Dibs, and retaliation state remains visible beside enemy names.
+- Adds All, Watched, Actionable, and Retals roster filters plus an optional Warbuddy priority order.
+- Applies filtering and ordering with reversible CSS only; Torn's member rows are never moved or rewritten.
 - Falls back to the proven floating panel when Torn does not expose a safe integration point.
 
 Warbuddy is a Torn userscript for the live war action queue and retaliation opportunities supplied by the Grusmedia backend.
@@ -65,6 +66,22 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.36 - 26 August 2026
+
+- Reworks the opt-in integrated presentation into a full-width **Roster beta** control strip mounted above the common two-faction board.
+- Leaves the proven Floating mode as the default and keeps the existing attack-page panel unchanged.
+- Shows compact Watch, Dibs, and timed Retal state directly beside recognized enemy names.
+- Adds All, Watched, Actionable, and Retals filters plus an opt-in priority order for the enemy roster.
+- Keeps live updates running while the roster strip is closed; closing the Floating panel still pauses its connection as before.
+- Uses reversible classes and CSS ordering only, with a Floating fallback when Torn's current markup cannot be verified safely.
+
+### 0.1.35 - 26 August 2026
+
+- Fixes Integrated mode choosing Torn's member cell as its mount point and covering existing roster information.
+- Reserves a complete grid or table row for Warbuddy and keeps the expanded panel at a compact width.
+- Removes the explanatory display-mode paragraph; the option is now simply labelled **Integrated (beta)**.
+- Keeps Floating as the default and retains the same authenticated session, socket, polling, and inline actions.
 
 ### 0.1.34 - 26 August 2026
 
