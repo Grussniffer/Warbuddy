@@ -919,6 +919,8 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(styleSource, /flex:0 0 100%/);
     assert.match(styleSource, /wc-roster-mode/);
     assert.match(styleSource, /width:100%; max-width:none/);
+    assert.match(styleSource, /wc-roster-mode \.wc-body \{ max-height:none; overflow:visible; overscroll-behavior:auto/);
+    assert.match(styleSource, /\.wc-target-list \{ max-height:180px; overflow:auto/);
   });
 
   it("keeps roster filtering and priority ordering reversible", async () => {

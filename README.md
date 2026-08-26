@@ -1,7 +1,9 @@
 # Warbuddy
 
-## 0.1.36
+## 0.1.37
 
+- Lets Torn's page continue scrolling while the pointer is over the expanded Roster strip.
+- Keeps the watched-target list independently scrollable when that list itself is open.
 - Keeps the current floating panel as the default presentation.
 - Replaces **Integrated (beta)** with an opt-in **Roster (beta)** strip above both ranked-war faction lists.
 - Keeps the strip collapsed by default while live Watch, Dibs, and retaliation state remains visible beside enemy names.
@@ -66,6 +68,12 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.37 - 26 August 2026
+
+- Stops the expanded Roster strip from trapping wheel and trackpad scrolling.
+- Treats Roster mode as ordinary Torn page content while retaining deliberate inner scrolling for the watched-target list.
+- Leaves Floating mode's bounded internal scrolling unchanged.
 
 ### 0.1.36 - 26 August 2026
 
