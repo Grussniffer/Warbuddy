@@ -299,6 +299,53 @@ describe("Warbuddy action queue", () => {
 
     assert.deepEqual(items.map((item) => item.key), ["hospital-401"]);
   });
+
+  it("keeps chain risk first and orders personal target groups predictably", () => {
+    const items = core.applyTargetGroups([
+      { key: "watched-ready-1", memberId: 1 },
+      { key: "chain-risk" },
+      { key: "watched-ready-2", memberId: 2 },
+      { key: "watched-ready-3", memberId: 3 },
+    ], {
+      1: "later",
+      2: "chain",
+      3: "priority",
+      nope: "priority",
+      4: "invalid",
+    });
+
+    assert.deepEqual(items.map((item) => item.key), [
+      "chain-risk",
+      "watched-ready-3",
+      "watched-ready-2",
+      "watched-ready-1",
+    ]);
+    assert.deepEqual(core.normalizeTargetGroups({ 1: "PRIORITY", 2: "invalid" }), { 1: "priority" });
+  });
+
+  it("builds a three-item focus queue and notification transitions", () => {
+    const actions = [
+      { key: "watched-flight-1", severity: "urgent", title: "Landing", detail: "30s", memberId: 1, url: "https://example.com/1" },
+      { key: "watched-ready-2", severity: "urgent", title: "Ready", detail: "now", memberId: 2, url: "https://example.com/2" },
+      { key: "hospital-3", severity: "watch", title: "Hospital", detail: "5m", memberId: 3 },
+    ];
+    const retaliations = [{ id: "retal-1", attackerId: 4, attackerName: "Enemy", defenderName: "Ally", expiresAt: 2_000_000_100 }];
+
+    const focus = core.buildFocusQueue({ actions, retaliations, limit: 3 });
+    assert.equal(focus.length, 3);
+    assert.equal(focus[0].kind, "retaliation");
+    assert.deepEqual(
+      core.notificationCandidates({ actions, retaliations }).map((entry) => entry.kind),
+      ["retaliation", "landing", "attackable"]
+    );
+  });
+
+  it("recognizes attack results without treating ordinary status text as a result", () => {
+    assert.equal(core.attackOutcomeFromText("You hospitalized Target with your final hit")?.kind, "hospitalized");
+    assert.equal(core.attackOutcomeFromText("You mugged Target for $10")?.kind, "mugged");
+    assert.equal(core.attackOutcomeFromText("You left Target on the street")?.kind, "left");
+    assert.equal(core.attackOutcomeFromText("Target is currently hospitalized"), undefined);
+  });
 });
 
 describe("Warbuddy live state", () => {
@@ -492,7 +539,7 @@ describe("Warbuddy panel state", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     assert.ok(source.includes('class="wc-input wc-secret-input"'));
-    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.32"'));
+    assert.ok(source.includes('const SCRIPT_VERSION = "0.1.34"'));
     assert.ok(source.includes('if (!core.dibsFeatureEnabled(state.settings)) return ""'));
     assert.ok(source.includes('type="text"'));
     assert.ok(source.includes('autocomplete="one-time-code"'));
@@ -786,6 +833,48 @@ describe("Warbuddy panel state", () => {
 });
 
 describe("Warbuddy userscript source contracts", () => {
+  it("keeps floating mode as the default and reuses the existing live session in integrated mode", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const modeSource = compactSource(sourceSection(source, "function setDisplayMode", "function attachPanelDragHandler"));
+    const mountSource = compactSource(sourceSection(source, "function resolvePanelMount", "function setDisplayMode"));
+    const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
+
+    assert.equal(core.normalizeDisplayMode(undefined), "floating");
+    assert.equal(core.normalizeDisplayMode("unexpected"), "floating");
+    assert.equal(core.normalizeDisplayMode("integrated"), "integrated");
+    assert.match(source, /displayMode: core\.normalizeDisplayMode\(storage\.get\(DISPLAY_MODE_STORAGE, ""\)\)/);
+    assert.match(modeSource, /storage\.set\(DISPLAY_MODE_STORAGE, nextMode\)/);
+    assert.match(modeSource, /scheduleRender\(\)/);
+    assert.doesNotMatch(modeSource, /new WebSocket|connectSocket|startFallbackPolling|setInterval/);
+    assert.match(mountSource, /if \(state\.displayMode !== "integrated"\)/);
+    assert.match(mountSource, /placement: "floating"/);
+    assert.match(mountSource, /fallback: true/);
+    assert.match(inlineSource, /state\.displayMode === "integrated"/);
+    assert.match(inlineSource, /core\.isRankedWarPageUrl\(window\.location\.href\)/);
+  });
+
+  it("matches only ranked-war enemy profile links for integrated row actions", () => {
+    assert.equal(core.isRankedWarPageUrl("https://www.torn.com/factions.php?step=your&type=1#/war/rank"), true);
+    assert.equal(core.isRankedWarPageUrl("https://www.torn.com/factions.php?step=your&type=1#/tab=armoury"), false);
+    assert.equal(core.isRankedWarPageUrl("https://example.com/factions.php#/war/rank"), false);
+    assert.equal(core.profileMemberIdFromUrl("https://www.torn.com/profiles.php?XID=3601225"), 3601225);
+    assert.equal(core.profileMemberIdFromUrl("/profiles.php?xid=3601225"), 3601225);
+    assert.equal(core.profileMemberIdFromUrl("https://example.com/profiles.php?XID=3601225"), 0);
+    assert.equal(core.profileMemberIdFromUrl("https://www.torn.com/factions.php?ID=3601225"), 0);
+  });
+
+  it("provides reversible display controls and a safe floating fallback", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(renderSource, /\[ \["floating", "Floating"\], \["integrated", "Integrated beta"\], \]/);
+    assert.match(renderSource, /data-display-mode="\$\{value\}"/);
+    assert.match(renderSource, /Integrated beta/);
+    assert.match(renderSource, /Integrated placement is unavailable on this Torn view\. Floating mode is active\./);
+    assert.match(source, /Warbuddy: use floating mode/);
+    assert.match(source, /Warbuddy: use integrated beta/);
+  });
+
   it("hides the whole action queue via showActionQueue while keeping the tracker-disabled notice separate", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const sessionViewSource = compactSource(sourceSection(source, "function sessionView", "const statusView"));
@@ -797,7 +886,7 @@ describe("Warbuddy userscript source contracts", () => {
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
 
     assert.match(sessionViewSource, /const actionQueueEnabled = state\.settings\?\.enabled !== false && state\.settings\?\.showActionQueue !== false/);
-    assert.match(sessionViewSource, /const actions = !actionQueueEnabled \? \[\] : core\.buildActionQueue\(/);
+    assert.match(sessionViewSource, /const actions = !actionQueueEnabled \? \[\] : core\.applyTargetGroups\(core\.buildActionQueue\(/);
     assert.match(queueMarkupSource, /if \(trackerDisabled\) return ""/);
     assert.match(queueMarkupSource, /if \(!view\.actionQueueEnabled\) return ""/);
     assert.match(renderSource, /const trackerDisabled = state\.settings\?\.enabled === false/);
@@ -914,11 +1003,11 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(dibsMarkupSource, /const canMutate = rosterIsFresh\(view\.enemyFactionId\) && !state\.authTerminal && !state\.keySaving/);
     assert.match(saveTargetsSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
     assert.match(quickWatchSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
-    assert.match(updateDibsSource, /if \(!currentEnemyRosterIsFresh\(\) \|\| state\.keySaving\)/);
+    assert.match(updateDibsSource, /action === "claim" && !currentEnemyRosterIsFresh\(\)/);
     assert.match(source, /state\.rosterDataAt\.delete\(factionId\)/);
     assert.match(source, /state\.rosterDataAt\.set\(factionId, Date\.now\(\)\)/);
     assert.match(renderSource, /data-action="save-targets"[^>]*!isOnline\(\)[^>]*state\.authTerminal[^>]*state\.keySaving/);
-    assert.match(renderSource, /Target data is syncing or stale\. Generic online suggestions and Dibs actions are paused\./);
+    assert.match(renderSource, /Showing cached data from .* ago\. Live-only suggestions and changes are paused\./);
   });
 
   it("globally locks Dibs during a mutation and offers Dibs on retaliation rows", async () => {
@@ -937,7 +1026,7 @@ describe("Warbuddy userscript source contracts", () => {
 
     assert.match(dibsMarkupSource, /const anyBusy = state\.dibsBusyTargetId > 0/);
     assert.match(dibsMarkupSource, /const disabled = anyBusy \|\| \(!claim && !canMutate\)/);
-    assert.match(dibsMarkupSource, /!canMutate \|\| anyBusy \? " disabled" : ""/);
+    assert.match(dibsMarkupSource, /!canRelease \|\| anyBusy \? " disabled" : ""/);
     assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
     assert.match(updateDibsSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);
     assert.match(updateDibsSource, /if \(!expectsSocketSnapshot\) applyDibsSnapshot\(response\)/);

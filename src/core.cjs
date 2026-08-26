@@ -11,6 +11,7 @@
   const URGENT_CHAIN_MS = 2 * 60 * 1000;
   const WATCHED_TARGET_WINDOW_MS = 60 * 1000;
   const DIBS_HOSPITAL_WINDOW_MS = 5 * 60 * 1000;
+  const TARGET_GROUPS = ["priority", "chain", "later"];
 
   const toTimestampMs = (value) => {
     const numeric = Number(value || 0);
@@ -37,6 +38,9 @@
 
   const attackUrl = (memberId) =>
     `https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(String(memberId || ""))}`;
+
+  const normalizeDisplayMode = (value) =>
+    String(value || "").trim().toLowerCase() === "integrated" ? "integrated" : "floating";
 
   const isFactionPageUrl = (value) => {
     let url;
@@ -77,6 +81,36 @@
       && String(url.searchParams.get("sid") || "").toLowerCase() === "attack";
   };
 
+  const isRankedWarPageUrl = (value) => {
+    if (!isFactionPageUrl(value)) return false;
+    let url;
+    try {
+      url = new URL(String(value || ""), "https://www.torn.com/");
+    } catch {
+      return false;
+    }
+    return /(?:^|\/)war\/rank(?:[/?#]|$)/i.test(decodeURIComponent(String(url.hash || "")).replace(/^#\/?/, ""));
+  };
+
+  const profileMemberIdFromUrl = (value) => {
+    let url;
+    try {
+      url = new URL(String(value || ""), "https://www.torn.com/");
+    } catch {
+      return 0;
+    }
+    if (url.hostname.toLowerCase().replace(/^www\./, "") !== "torn.com") return 0;
+    if (!/^\/profiles\.php$/i.test(url.pathname)) return 0;
+    const memberId = Number(
+      url.searchParams.get("XID")
+      || url.searchParams.get("xid")
+      || url.searchParams.get("ID")
+      || url.searchParams.get("id")
+      || 0
+    );
+    return Number.isSafeInteger(memberId) && memberId > 0 ? memberId : 0;
+  };
+
   const memberStatus = (member) =>
     String(member?.status?.userStatus || member?.status?.state || member?.status?.status || "").toLowerCase();
 
@@ -93,6 +127,108 @@
       .map((memberId) => Number(memberId))
       .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0)
   );
+
+  const normalizeTargetGroups = (value) => {
+    const source = value && typeof value === "object" ? value : {};
+    const normalized = {};
+    for (const [rawMemberId, rawGroup] of Object.entries(source)) {
+      const memberId = Number(rawMemberId);
+      const group = String(rawGroup || "").trim().toLowerCase();
+      if (!Number.isSafeInteger(memberId) || memberId <= 0 || !TARGET_GROUPS.includes(group)) continue;
+      normalized[String(memberId)] = group;
+    }
+    return normalized;
+  };
+
+  const targetGroupRank = (group) => {
+    const rank = TARGET_GROUPS.indexOf(String(group || "").toLowerCase());
+    return rank < 0 ? TARGET_GROUPS.length : rank;
+  };
+
+  const applyTargetGroups = (items, groups) => {
+    const normalizedGroups = normalizeTargetGroups(groups);
+    return (Array.isArray(items) ? items : [])
+      .map((item, sourceOrder) => ({
+        ...item,
+        targetGroup: normalizedGroups[String(Number(item?.memberId || 0))] || "",
+        sourceOrder,
+      }))
+      .sort((left, right) => {
+        if (left.key === "chain-risk" || right.key === "chain-risk") {
+          if (left.key === right.key) return left.sourceOrder - right.sourceOrder;
+          return left.key === "chain-risk" ? -1 : 1;
+        }
+        return targetGroupRank(left.targetGroup) - targetGroupRank(right.targetGroup)
+          || left.sourceOrder - right.sourceOrder;
+      })
+      .map(({ sourceOrder: _sourceOrder, ...item }) => item);
+  };
+
+  const buildFocusQueue = ({ actions = [], retaliations = [], limit = 3 } = {}) => {
+    const entries = [
+      ...(Array.isArray(retaliations) ? retaliations : []).map((item) => ({
+        kind: "retaliation",
+        key: `retaliation-${item?.id || item?.attackerId || item?.expiresAt || "unknown"}`,
+        severity: "urgent",
+        order: Number(item?.expiresAt || 0) * 1000,
+        item,
+      })),
+      ...(Array.isArray(actions) ? actions : []).map((item) => ({
+        kind: "action",
+        key: String(item?.key || "action"),
+        severity: String(item?.severity || "info"),
+        order: Number(item?.order || Number.MAX_SAFE_INTEGER),
+        item,
+      })),
+    ];
+    const severityRank = { urgent: 0, watch: 1, info: 2 };
+    return entries
+      .sort((left, right) => (
+        (severityRank[left.severity] ?? 3) - (severityRank[right.severity] ?? 3)
+        || left.order - right.order
+        || left.key.localeCompare(right.key)
+      ))
+      .slice(0, Math.max(1, Math.min(9, Number(limit) || 3)));
+  };
+
+  const notificationCandidates = ({ actions = [], retaliations = [] } = {}) => [
+    ...(Array.isArray(retaliations) ? retaliations : []).map((attack) => ({
+      key: `retaliation-${attack?.id || attack?.attackerId || attack?.expiresAt || "unknown"}`,
+      kind: "retaliation",
+      title: `Retaliation on ${attack?.attackerName || `Player ${attack?.attackerId || "?"}`}`,
+      text: attack?.defenderName ? `Hit ${attack.defenderName}` : "Faction retaliation available",
+      url: attack?.attackUrl || attackUrl(attack?.attackerId),
+    })),
+    ...(Array.isArray(actions) ? actions : [])
+      .filter((item) => String(item?.key || "").startsWith("watched-"))
+      .map((item) => ({
+        key: String(item.key),
+        kind: String(item.key).startsWith("watched-flight-")
+          ? "landing"
+          : String(item.key).startsWith("watched-hospital-") ? "hospital" : "attackable",
+        title: String(item.title || "Watched target update"),
+        text: String(item.detail || ""),
+        url: item.url,
+      })),
+  ];
+
+  const attackOutcomeFromText = (value) => {
+    const text = String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!text) return undefined;
+    if (/\byou\s+hospitali[sz]ed\b/.test(text) || /\bwas hospitali[sz]ed\b/.test(text)) {
+      return { kind: "hospitalized", label: "Target hospitalized", releaseDibs: true };
+    }
+    if (/\b(?:you\s+)?mugged\b/.test(text)) {
+      return { kind: "mugged", label: "Target mugged", releaseDibs: false };
+    }
+    if (/\bleft\b.{0,80}\b(?:on the street|for dead)\b/.test(text)) {
+      return { kind: "left", label: "Target left", releaseDibs: false };
+    }
+    if (/\b(?:attack failed|you lost|you were defeated|escaped from you)\b/.test(text)) {
+      return { kind: "failed", label: "Attack did not finish", releaseDibs: false };
+    }
+    return undefined;
+  };
 
   const dibsEligibility = (member, nowMs = Date.now()) => {
     const status = memberStatus(member);
@@ -344,10 +480,13 @@
   return {
     activeDibsClaim,
     activeRetaliations,
+    applyTargetGroups,
+    attackOutcomeFromText,
     attackPageTargetId,
     applyRosterUpdate,
     attackUrl,
     buildActionQueue,
+    buildFocusQueue,
     dibsAttackPresentation,
     dibsEligibility,
     dibsFeatureEnabled,
@@ -356,7 +495,12 @@
     formatBsp,
     inferEnemyFactionId,
     isFactionPageUrl,
+    isRankedWarPageUrl,
     isWarbuddyPageUrl,
+    normalizeDisplayMode,
+    normalizeTargetGroups,
+    notificationCandidates,
+    profileMemberIdFromUrl,
     scoreForFaction,
     toTimestampMs,
   };

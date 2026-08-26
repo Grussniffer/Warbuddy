@@ -1,12 +1,12 @@
 # Warbuddy
 
-## 0.1.31
+## 0.1.34
 
-- Adds a target-first attack-page card with one-tap Watch/Unwatch and shared Dibs.
-- Makes the watched-target picker searchable and filterable, with explicit Save, Cancel, and Clear actions.
-- Verifies replacement keys before saving them and stops automatic retries when a key needs attention.
-- Hides the Action Queue when the faction switch is off while keeping retaliation, watched targets, and Dibs available.
-- Pauses unsafe live actions on stale/offline data and improves touch targets, collapse behavior, and popup positioning.
+- Keeps the current floating panel as the default presentation.
+- Adds an opt-in **Integrated beta** mode under Privacy and userscript menu commands.
+- Embeds the existing panel into supported Torn war and attack views without opening another socket or poller.
+- Adds compact Watch, Dibs, and retaliation actions beside matched enemy profile links on the ranked-war page.
+- Falls back to the proven floating panel when Torn does not expose a safe integration point.
 
 Warbuddy is a Torn userscript for the live war action queue and retaliation opportunities supplied by the Grusmedia backend.
 
@@ -65,6 +65,27 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.34 - 26 August 2026
+
+- Adds an optional **Integrated beta** presentation while retaining **Floating** as the default for every existing and new installation.
+- Places the existing Warbuddy surface inside supported ranked-war and attack-page areas, and adds compact Watch, Dibs, and retaliation controls beside recognized enemy profile links.
+- Reuses the same authenticated session, WebSocket, compatible polling, cached snapshot, and live state as floating mode. Switching layouts adds no Torn API calls and cannot create duplicate live connections.
+- Falls back automatically to the floating panel if Torn changes its page markup or no safe integrated anchor is available.
+- Adds userscript menu commands for switching modes even if an integrated control cannot be reached.
+- Requires only a Warbuddy userscript update. No backend restart, SQL migration, environment change, or website deployment is required for the script behavior.
+
+### 0.1.33 - 26 August 2026
+
+- Adds an optional three-item Focus queue, personal target groups, userscript notifications, and compact attack-page target context.
+- Keeps the last usable snapshot visible during brief disconnects while pausing live-only actions until recovery.
+- Detects confirmed attack outcomes without treating ordinary Torn status text as a completed attack.
+
+### 0.1.32 - 25 August 2026
+
+- Adds revision-aware compatible snapshots so unchanged polls return a small acknowledgement instead of full rosters.
+- Keeps urgent fallback updates at two seconds, backs quiet active wars off to five seconds, and uses ten seconds outside war.
+- Continues to pause all live work while the panel is collapsed or the Torn page is hidden.
 
 ### 0.1.31 - 24 August 2026
 
