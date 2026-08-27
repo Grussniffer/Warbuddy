@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.44";
+  const SCRIPT_VERSION = "0.1.45";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -247,9 +247,6 @@
     .${INLINE_TOOLS_CLASS} button, .${INLINE_TOOLS_CLASS} a { display:inline-flex; width:18px; height:18px; align-items:center; justify-content:center; border:1px solid transparent; border-radius:3px; background:transparent; color:#a1a1aa; padding:0; text-decoration:none; font:12px/1 Arial,Helvetica,sans-serif; cursor:pointer; }
     .${INLINE_TOOLS_CLASS} button:hover, .${INLINE_TOOLS_CLASS} button:focus-visible, .${INLINE_TOOLS_CLASS} a:hover, .${INLINE_TOOLS_CLASS} a:focus-visible { border-color:#52525b; background:#27272a; color:#f4f4f5; outline:0; }
     .${INLINE_TOOLS_CLASS} .wc-inline-watch.active { color:#fbbf24; }
-    .${INLINE_TOOLS_CLASS} .wc-inline-dibs.free { color:#d4d4d8; }
-    .${INLINE_TOOLS_CLASS} .wc-inline-dibs.mine { color:#10b981; }
-    .${INLINE_TOOLS_CLASS} .wc-inline-dibs.taken { color:#a1a1aa; }
     .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
     .${STATUS_CELL_CLASS} { position:relative !important; color:transparent !important; text-shadow:none !important; }
@@ -258,7 +255,7 @@
     .${STATUS_DETAIL_CLASS}.hospital, .${STATUS_DETAIL_CLASS}.jail { color:var(--user-status-red-color,#f87171) !important; }
     .${STATUS_DETAIL_CLASS}.soon { color:#fbbf24 !important; }
     .${STATUS_MISMATCH_CLASS} { box-shadow:inset 0 -2px var(--user-status-blue-color,#22d3ee) !important; }
-    @media (hover:hover) and (pointer:fine) { [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS}.quiet { display:none; } [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-watch:not(.active), [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-dibs.free { display:none; } }
+    @media (hover:hover) and (pointer:fine) { [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS}.quiet { display:none; } [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-watch:not(.active) { display:none; } }
     #${PANEL_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${PANEL_ID}.wc-collapsed .wc-body { display:none; }
     #${PANEL_ID}.wc-collapsed { width:auto; min-width:154px; max-width:calc(100vw - 20px); border-radius:999px; }
@@ -1722,7 +1719,6 @@
     event.stopPropagation();
     const action = String(control.dataset?.inlineAction || "");
     if (action === "watch") void toggleWatchedTarget(memberId);
-    if (action === "claim") void updateDibs("claim", memberId, `inline-${memberId}`);
   }
 
   function syncIntegratedMemberTools(view = sessionView()) {
@@ -1776,23 +1772,11 @@
       const claim = core.dibsFeatureEnabled(state.settings)
         ? core.activeDibsClaim(view.dibs, memberId, state.nowMs)
         : undefined;
-      const eligibility = claim ? undefined : core.dibsEligibility(member, state.nowMs);
       const isMine = !!claim && String(claim.claimedByPlayerId || "") === String(state.session?.playerId || "");
       const dibsRemaining = claim ? core.duration(core.toTimestampMs(claim.expiresAt) - state.nowMs) : "";
       const dibsLabel = claim
         ? `${isMine ? "Your Dibs" : `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId}`} - ${dibsRemaining} left`
-        : eligibility?.state === "hospitalized"
-          ? `Claim Dibs - leaves hospital in ${core.duration(Number(eligibility.hospitalUntil || 0) - state.nowMs)}`
-          : "Claim Dibs - attackable now";
-      const canClaim = !claim
-        && eligibility?.eligible === true
-        && rosterIsFresh(view.enemyFactionId)
-        && isOnline()
-        && !state.authTerminal
-        && !state.keySaving
-        && !state.targetsSaving
-        && !state.targetQuickBusyId
-        && !state.dibsBusyTargetId;
+        : "";
       const retaliation = retaliations.get(memberId);
       const retaliationLabel = retaliation
         ? `Retaliation - ${core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)} left`
@@ -1844,7 +1828,7 @@
         ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
         : "";
       tools.classList.toggle("quiet", !watched && !retaliation);
-      const toolsMarkup = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && canClaim ? `<button type="button" class="wc-inline-dibs free" data-inline-action="claim" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
+      const toolsMarkup = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
       if (inlineMarkupCache.get(tools) !== toolsMarkup) {
         tools.innerHTML = toolsMarkup;
         inlineMarkupCache.set(tools, toolsMarkup);

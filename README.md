@@ -1,5 +1,11 @@
 # Warbuddy
 
+## 0.1.45
+
+- Removes the redundant Dibs hand beside Torn roster names so wide player banners cannot spill controls into the Level column.
+- Keeps claim ownership visible on Torn's native Attack link: green for your Dibs, gray for another player's Dibs, with details in the tooltip.
+- Keeps explicit claim and release controls in Warbuddy's queue, watched-target list, retaliation entries, and attack-page target card.
+
 ## 0.1.44
 
 - Keeps WebSocket changes immediate while repainting live countdowns at most every two seconds.
@@ -103,6 +109,13 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.45 - 27 August 2026
+
+- Removes the eligible-target Dibs hand injected beside Torn roster names.
+- Preserves shared Dibs behavior and the existing Attack-link ownership colors and tooltip.
+- Leaves all claim/release controls available inside Warbuddy and on its attack-page target card.
+- Adds no Torn API call, backend change, setting, or database migration.
 
 ### 0.1.44 - 27 August 2026
 

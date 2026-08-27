@@ -1069,8 +1069,9 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(inlineSource, /syncIntegratedStatusCell\(row, attackLink, memberId, availability, keepStatusCells\)/);
     assert.doesNotMatch(inlineSource, /availabilityMarkup/);
     assert.match(inlineSource, /tools\.classList\.toggle\("quiet", !watched && !retaliation\)/);
-    assert.match(inlineSource, /core\.dibsFeatureEnabled\(state\.settings\) && canClaim/);
-    assert.doesNotMatch(inlineSource, /data-inline-action="\$\{canClaim \? "claim" : "inspect"\}"/);
+    assert.doesNotMatch(inlineSource, /wc-inline-dibs|data-inline-action="claim"|const canClaim|dibsEligibility/);
+    assert.match(inlineSource, /warbuddy-attack-dibs-mine/);
+    assert.match(inlineSource, /warbuddy-attack-dibs-taken/);
     assert.match(inlineSource, /core\.rosterOrder\(flags, member, state\.nowMs\)/);
     assert.match(inlineSource, /ffscouterFilterActive\(\)/);
     assert.match(inlineSource, /tornRosterSortState\(decoratedRows, board\)/);
@@ -1086,7 +1087,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(mountCleanupSource, /delete board\.dataset\.warbuddyRosterBoard/);
     assert.match(source, /function rankedWarStatusCell\(row, attackLink\)/);
     assert.match(source, /classList\.remove\(STATUS_CELL_CLASS\)/);
-    assert.match(source, /data-warbuddy-member-row.*wc-inline-dibs\.free/);
+    assert.doesNotMatch(source, /wc-inline-dibs|data-inline-action="claim"/);
   });
 
   it("reconciles Torn status, reuses native colors, and avoids unchanged roster rewrites", async () => {
