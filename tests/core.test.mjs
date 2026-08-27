@@ -965,6 +965,8 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(modeSource, /scheduleRender\(\)/);
     assert.doesNotMatch(modeSource, /new WebSocket|connectSocket|startFallbackPolling|setInterval/);
     assert.match(mountSource, /if \(state\.displayMode !== "integrated"\)/);
+    assert.match(mountSource, /if \(state\.attackTargetId\).*placement: "floating", fallback: false/);
+    assert.doesNotMatch(mountSource, /labelsContainer|desiredPlacement === "attack"/);
     assert.match(mountSource, /placement: "floating"/);
     assert.match(mountSource, /fallback: true/);
     assert.match(inlineSource, /state\.displayMode === "integrated"/);
@@ -999,7 +1001,7 @@ describe("Warbuddy userscript source contracts", () => {
     const rowSource = compactSource(sourceSection(
       source,
       "function lowestCommonAncestor",
-      "function createAttackHost"
+      "function resolvePanelMount"
     ));
     const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
 

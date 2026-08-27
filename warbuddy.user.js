@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.40
+// @version      0.1.41
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -745,7 +745,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.40";
+  const SCRIPT_VERSION = "0.1.41";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -1519,36 +1519,22 @@
     return host;
   }
 
-  function createAttackHost(labelsContainer) {
-    const host = document.createElement("span");
-    host.id = INTEGRATED_HOST_ID;
-    host.className = "wc-attack-host";
-    host.dataset.placement = "attack";
-    labelsContainer.insertBefore(host, labelsContainer.firstChild || null);
-    return host;
-  }
-
   function resolvePanelMount(view) {
+    if (state.attackTargetId) {
+      removeIntegratedMount(true);
+      return { mount: document.body, placement: "floating", fallback: false };
+    }
+
     if (state.displayMode !== "integrated") {
       removeIntegratedMount(true);
       return { mount: document.body, placement: "floating", fallback: false };
     }
 
-    const desiredPlacement = state.attackTargetId
-      ? "attack"
-      : core.isRankedWarPageUrl(window.location.href) ? "rank" : "";
+    const desiredPlacement = core.isRankedWarPageUrl(window.location.href) ? "rank" : "";
     let host = document.getElementById(INTEGRATED_HOST_ID);
     if (host && host.dataset?.placement !== desiredPlacement) {
       removeIntegratedMount(true);
       host = null;
-    }
-
-    if (desiredPlacement === "attack") {
-      const labelsContainer = document.querySelector?.("[class*='labelsContainer']");
-      if (labelsContainer) {
-        host ||= createAttackHost(labelsContainer);
-        return { mount: host, placement: "toolbar", fallback: false };
-      }
     }
 
     if (desiredPlacement === "rank") {

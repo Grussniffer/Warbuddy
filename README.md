@@ -1,5 +1,11 @@
 # Warbuddy
 
+## 0.1.41
+
+- Keeps Warbuddy available on Torn attack pages without mounting it over Torn's combat controls.
+- Always uses the draggable Floating panel on attack pages, even when Roster mode is selected for the ranked-war page.
+- Preserves the current-target card, Dibs, watched targets, live state, and saved panel position without backend changes or extra requests.
+
 ## 0.1.40
 
 - Shows both factions' active chain counts and timers as compact **Us** and **Them** labels in Floating and Roster mode.
@@ -77,6 +83,12 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.41 - 27 August 2026
+
+- Restricts Roster integration to Torn's ranked-war roster, where the layout was designed and verified.
+- Restores the draggable Floating panel on attack pages so Warbuddy no longer covers combat information or becomes pinned to Torn's target-label area.
+- Keeps attack-page target context and all existing live functionality unchanged.
 
 ### 0.1.40 - 27 August 2026
 
