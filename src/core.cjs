@@ -28,6 +28,15 @@
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   };
 
+  const trustedClockOffset = (value, deviceNowMs = Date.now(), maxSkewMs = 24 * 60 * 60 * 1000) => {
+    const serverNowMs = toTimestampMs(value);
+    const deviceNow = Number(deviceNowMs);
+    const maximumSkew = Math.max(0, Number(maxSkewMs) || 0);
+    if (!serverNowMs || !Number.isFinite(deviceNow)) return undefined;
+    const offset = serverNowMs - deviceNow;
+    return Math.abs(offset) <= maximumSkew ? offset : undefined;
+  };
+
   const formatBsp = (value) => {
     const numeric = Number(value || 0);
     if (numeric >= 1e12) return `${(numeric / 1e12).toFixed(1)}t`;
@@ -257,6 +266,19 @@
       tone: "",
       until,
     };
+  };
+
+  const availabilityCategory = (availability) => {
+    const state = String(availability?.state || "").toLowerCase();
+    if (/hospital|jail/.test(state)) return "hospital";
+    if (["incoming", "outgoing", "traveling", "abroad"].includes(state)) return "traveling";
+    if (["available", "okay"].includes(state)) return "available";
+    return "";
+  };
+
+  const rosterPriorityAllowedForSort = (column) => {
+    const normalized = String(column || "").trim().toLowerCase();
+    return !normalized || normalized === "status";
   };
 
   const availabilityRank = (state) => {
@@ -675,6 +697,7 @@
   return {
     activeDibsClaim,
     activeRetaliations,
+    availabilityCategory,
     applyTargetGroups,
     attackOutcomeFromText,
     attackPageTargetId,
@@ -705,7 +728,9 @@
     rosterFilterMatches,
     rosterOrder,
     rosterPriority,
+    rosterPriorityAllowedForSort,
     scoreForFaction,
     toTimestampMs,
+    trustedClockOffset,
   };
 });

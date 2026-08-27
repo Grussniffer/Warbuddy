@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.43
+
+- Pauses Warbuddy priority ordering while Torn is actively sorting a non-status column, while retaining the existing FFScouter handoff.
+- Keeps Torn's visible status when it disagrees with the backend and marks the cell subtly until the two sources agree.
+- Uses Torn or backend-synchronized time for live countdowns when available.
+- Reuses Torn's native status colors and skips unchanged inline roster markup to reduce layout churn.
+
 ## 0.1.42
 
 - Places compact hospital, travel, and abroad details inside Torn's existing Status column instead of beside member names.
@@ -89,6 +96,15 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.43 - 27 August 2026
+
+- Yields optional Warbuddy ordering to Torn's active member, level, BSP, activity, or location sort; Status ordering and the existing action queue remain unchanged.
+- Reconciles Torn's current row status with the backend before replacing the Status cell. On disagreement, Torn stays visible with a quiet sync marker instead of showing a confident but contradictory timer.
+- Prefers Torn's synchronized page clock, then a validated backend snapshot clock, for hospital, flight, Dibs, retaliation, and chain countdowns.
+- Uses Torn's native status color variables and preserves Torn's original status DOM.
+- Updates inline Watch, Dibs, retaliation, status, title, dataset, and order markup only when its rendered value changes.
+- Adds no direct Torn polling, backend endpoint, API call, setting, or database migration.
 
 ### 0.1.42 - 27 August 2026
 

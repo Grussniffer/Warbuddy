@@ -179,6 +179,19 @@ describe("Warbuddy roster presentation", () => {
     }, nowMs).label, "");
   });
 
+  it("maps backend availability to Torn status families and yields to explicit Torn sorts", () => {
+    assert.equal(core.availabilityCategory({ state: "hospital" }), "hospital");
+    assert.equal(core.availabilityCategory({ state: "jail" }), "hospital");
+    assert.equal(core.availabilityCategory({ state: "incoming" }), "traveling");
+    assert.equal(core.availabilityCategory({ state: "abroad" }), "traveling");
+    assert.equal(core.availabilityCategory({ state: "available" }), "available");
+    assert.equal(core.availabilityCategory({ state: "unknown" }), "");
+    assert.equal(core.rosterPriorityAllowedForSort(""), true);
+    assert.equal(core.rosterPriorityAllowedForSort("status"), true);
+    assert.equal(core.rosterPriorityAllowedForSort("BSP"), false);
+    assert.equal(core.rosterPriorityAllowedForSort("member"), false);
+  });
+
   it("keeps Warbuddy urgency ahead of availability while sorting ordinary rows usefully", () => {
     const nowMs = 2_000_000_000_000;
     const available = { status: { userStatus: "Okay" }, location: { current: "Torn" } };
@@ -463,6 +476,14 @@ describe("Warbuddy action queue", () => {
 });
 
 describe("Warbuddy live state", () => {
+  it("accepts plausible server clock samples and rejects dangerous offsets", () => {
+    const deviceNowMs = 2_000_000_000_000;
+    assert.equal(core.trustedClockOffset(deviceNowMs + 4_000, deviceNowMs), 4_000);
+    assert.equal(core.trustedClockOffset((deviceNowMs + 4_000) / 1000, deviceNowMs), 4_000);
+    assert.equal(core.trustedClockOffset(deviceNowMs + 25 * 60 * 60 * 1000, deviceNowMs), undefined);
+    assert.equal(core.trustedClockOffset("not-a-time", deviceNowMs), undefined);
+  });
+
   it("applies full snapshots and ordered deltas", () => {
     const full = core.applyRosterUpdate(undefined, {
       version: 4,
@@ -1037,8 +1058,10 @@ describe("Warbuddy userscript source contracts", () => {
     assert.doesNotMatch(inlineSource, /data-inline-action="\$\{canClaim \? "claim" : "inspect"\}"/);
     assert.match(inlineSource, /core\.rosterOrder\(flags, member, state\.nowMs\)/);
     assert.match(inlineSource, /ffscouterFilterActive\(\)/);
-    assert.match(inlineSource, /!ffscouterOwnsOrder/);
-    assert.match(inlineSource, /row\.style\.order = String/);
+    assert.match(inlineSource, /tornRosterSortState\(decoratedRows, board\)/);
+    assert.match(inlineSource, /core\.rosterPriorityAllowedForSort\(tornSort\.column\)/);
+    assert.match(inlineSource, /state\.rosterPrioritySort && !externalSortReason/);
+    assert.match(inlineSource, /if \(row\.style\.order !== order\) row\.style\.order = order/);
     assert.doesNotMatch(inlineSource, /appendChild\(row\)|insertBefore\(row/);
     assert.match(cleanupSource, /warbuddy-roster-hidden/);
     assert.match(cleanupSource, /removeProperty\?\.\("order"\)/);
@@ -1049,6 +1072,32 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(source, /function rankedWarStatusCell\(row, attackLink\)/);
     assert.match(source, /classList\.remove\(STATUS_CELL_CLASS\)/);
     assert.match(source, /data-warbuddy-member-row.*wc-inline-dibs\.free/);
+  });
+
+  it("reconciles Torn status, reuses native colors, and avoids unchanged roster rewrites", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const statusSource = compactSource(sourceSection(
+      source,
+      "function tornStatusCategory",
+      "function syncIntegratedMemberTools"
+    ));
+    const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
+    const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
+    const clockSource = compactSource(sourceSection(source, "function tornPageNowMs", "function getStoredPanelPosition"));
+
+    assert.match(statusSource, /const mismatch = !!tornCategory && !!backendCategory && tornCategory !== backendCategory/);
+    assert.match(statusSource, /!availability\?\.label \|\| \(tornCategory && !backendCategory\)/);
+    assert.match(statusSource, /clearIntegratedStatusCell\(statusCell, false\)/);
+    assert.match(statusSource, /warbuddyStatusMismatch/);
+    assert.match(inlineSource, /inlineMarkupCache\.get\(tools\) !== toolsMarkup/);
+    assert.match(inlineSource, /tools\.addEventListener\("click", handleInlineToolAction\)/);
+    assert.doesNotMatch(inlineSource, /querySelector\?\.\('\[data-inline-action="watch"\]'\)\?\.addEventListener/);
+    assert.match(styleSource, /var\(--user-status-blue-color,#22d3ee\)/);
+    assert.match(styleSource, /var\(--user-status-red-color,#f87171\)/);
+    assert.match(clockSource, /pageWindow\.getCurrentTimestamp\(\)/);
+    assert.match(clockSource, /core\.trustedClockOffset\(value, Date\.now\(\)\)/);
+    assert.match(source, /syncTrustedClock\(snapshot\?\.generatedAt, "snapshot"\)/);
+    assert.match(source, /state\.nowMs = trustedNowMs\(\)/);
   });
 
   it("hides the whole action queue via showActionQueue while keeping the tracker-disabled notice separate", async () => {

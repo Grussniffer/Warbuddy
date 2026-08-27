@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.42
+// @version      0.1.43
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -54,6 +54,15 @@
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  };
+
+  const trustedClockOffset = (value, deviceNowMs = Date.now(), maxSkewMs = 24 * 60 * 60 * 1000) => {
+    const serverNowMs = toTimestampMs(value);
+    const deviceNow = Number(deviceNowMs);
+    const maximumSkew = Math.max(0, Number(maxSkewMs) || 0);
+    if (!serverNowMs || !Number.isFinite(deviceNow)) return undefined;
+    const offset = serverNowMs - deviceNow;
+    return Math.abs(offset) <= maximumSkew ? offset : undefined;
   };
 
   const formatBsp = (value) => {
@@ -285,6 +294,19 @@
       tone: "",
       until,
     };
+  };
+
+  const availabilityCategory = (availability) => {
+    const state = String(availability?.state || "").toLowerCase();
+    if (/hospital|jail/.test(state)) return "hospital";
+    if (["incoming", "outgoing", "traveling", "abroad"].includes(state)) return "traveling";
+    if (["available", "okay"].includes(state)) return "available";
+    return "";
+  };
+
+  const rosterPriorityAllowedForSort = (column) => {
+    const normalized = String(column || "").trim().toLowerCase();
+    return !normalized || normalized === "status";
   };
 
   const availabilityRank = (state) => {
@@ -703,6 +725,7 @@
   return {
     activeDibsClaim,
     activeRetaliations,
+    availabilityCategory,
     applyTargetGroups,
     attackOutcomeFromText,
     attackPageTargetId,
@@ -733,8 +756,10 @@
     rosterFilterMatches,
     rosterOrder,
     rosterPriority,
+    rosterPriorityAllowedForSort,
     scoreForFaction,
     toTimestampMs,
+    trustedClockOffset,
   };
 });
 
@@ -745,7 +770,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.42";
+  const SCRIPT_VERSION = "0.1.43";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -762,6 +787,7 @@
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
   const STATUS_CELL_CLASS = "warbuddy-status-cell";
   const STATUS_DETAIL_CLASS = "warbuddy-status-detail";
+  const STATUS_MISMATCH_CLASS = "warbuddy-status-mismatch";
   const LEGACY_STORAGE_KEYS = {
     [KEY_STORAGE]: "lads_war_companion_api_key",
     [COLLAPSED_STORAGE]: "lads_war_companion_collapsed",
@@ -779,6 +805,7 @@
   const PANEL_EDGE_GAP = 8;
   const MAX_WATCHED_TARGETS = 25;
   const TOPICS = ["war_tracker_settings", "war_tracker", "score", "retaliation", "war_dibs"];
+  const inlineMarkupCache = new WeakMap();
 
   const storage = {
     get(key, fallback = "") {
@@ -861,6 +888,8 @@
     dibsErrorTargetId: 0,
     dibsErrorTimer: 0,
     nowMs: Date.now(),
+    clockOffsetMs: 0,
+    clockSource: "device",
     collapsed: String(storage.get(COLLAPSED_STORAGE, "")) === "1",
     displayMode: core.normalizeDisplayMode(storage.get(DISPLAY_MODE_STORAGE, "")),
     panelPlacement: "floating",
@@ -983,9 +1012,10 @@
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
     .${STATUS_CELL_CLASS} { position:relative !important; color:transparent !important; text-shadow:none !important; }
     .${STATUS_CELL_CLASS} > :not(.${STATUS_DETAIL_CLASS}) { visibility:hidden !important; }
-    .${STATUS_DETAIL_CLASS} { position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center; color:#22d3ee !important; font:700 10px/1.1 Arial,Helvetica,sans-serif; text-align:center; white-space:nowrap; visibility:visible !important; }
-    .${STATUS_DETAIL_CLASS}.hospital { color:#f87171 !important; }
+    .${STATUS_DETAIL_CLASS} { position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center; color:var(--user-status-blue-color,#22d3ee) !important; font:inherit; font-weight:700; line-height:1.1; text-align:center; white-space:nowrap; visibility:visible !important; }
+    .${STATUS_DETAIL_CLASS}.hospital, .${STATUS_DETAIL_CLASS}.jail { color:var(--user-status-red-color,#f87171) !important; }
     .${STATUS_DETAIL_CLASS}.soon { color:#fbbf24 !important; }
+    .${STATUS_MISMATCH_CLASS} { box-shadow:inset 0 -2px var(--user-status-blue-color,#22d3ee) !important; }
     @media (hover:hover) and (pointer:fine) { [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS}.quiet { display:none; } [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-watch:not(.active), [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-dibs.free { display:none; } }
     #${PANEL_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${PANEL_ID}.wc-collapsed .wc-body { display:none; }
@@ -1321,6 +1351,31 @@
     && Number.isFinite(Date.parse(state.lastFallbackAt))
     && Date.parse(state.lastFallbackAt) > Date.now() - (FALLBACK_POLL_MAX_MS * 3);
 
+  function tornPageNowMs() {
+    const pageWindow = globalThis.unsafeWindow && typeof globalThis.unsafeWindow === "object"
+      ? globalThis.unsafeWindow
+      : window;
+    if (typeof pageWindow?.getCurrentTimestamp !== "function") return 0;
+    try {
+      return core.toTimestampMs(pageWindow.getCurrentTimestamp());
+    } catch {
+      return 0;
+    }
+  }
+
+  function trustedNowMs() {
+    return tornPageNowMs() || (Date.now() + Number(state.clockOffsetMs || 0));
+  }
+
+  function syncTrustedClock(value, source) {
+    const offsetMs = core.trustedClockOffset(value, Date.now());
+    if (!Number.isFinite(offsetMs)) return false;
+    state.clockOffsetMs = offsetMs;
+    state.clockSource = String(source || "backend");
+    state.nowMs = trustedNowMs();
+    return true;
+  }
+
   function getStoredPanelPosition() {
     const raw = storage.get(POSITION_STORAGE, "");
     if (!raw) return null;
@@ -1376,10 +1431,11 @@
 
   function removeInlineMemberTools() {
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((element) => element.remove());
-    document.querySelectorAll?.(`.${STATUS_CELL_CLASS}`).forEach((cell) => {
-      cell.classList.remove(STATUS_CELL_CLASS);
+    document.querySelectorAll?.(`.${STATUS_CELL_CLASS}, .${STATUS_MISMATCH_CLASS}`).forEach((cell) => {
+      cell.classList.remove(STATUS_CELL_CLASS, STATUS_MISMATCH_CLASS);
       cell.querySelectorAll?.(`.${STATUS_DETAIL_CLASS}`).forEach((detail) => detail.remove());
       delete cell.dataset.warbuddyStatusMemberId;
+      delete cell.dataset.warbuddyStatusMismatch;
     });
     document.querySelectorAll?.("[data-warbuddy-member-row]").forEach((row) => {
       row.classList.remove("warbuddy-roster-hidden", "warbuddy-row-retal", "warbuddy-row-actionable");
@@ -1877,6 +1933,7 @@
   }
 
   function applyEvent(topic, payload) {
+    syncTrustedClock(payload?.serverTime || payload?.generatedAt, `event:${topic}`);
     state.lastLiveDataAt = Date.now();
     if (topic === "war_tracker_settings") {
       state.settings = payload || null;
@@ -1920,6 +1977,7 @@
   }
 
   function applyFallbackSnapshot(snapshot) {
+    syncTrustedClock(snapshot?.generatedAt, "snapshot");
     state.lastLiveDataAt = Date.now();
     state.settings = snapshot?.settings || null;
     syncTargetDraft();
@@ -1961,6 +2019,7 @@
 
   function markFallbackSnapshotUnchanged(snapshot) {
     if (!snapshot?.unchanged || !state.fallbackRevision || snapshot.revision !== state.fallbackRevision) return false;
+    syncTrustedClock(snapshot?.generatedAt, "snapshot");
     state.lastLiveDataAt = Date.now();
     for (const factionId of state.rosters.keys()) state.rosterDataAt.set(factionId, state.lastLiveDataAt);
     state.fallbackUnchangedCount += 1;
@@ -2027,7 +2086,7 @@
         label: "Warbuddy snapshot",
       });
       if (generation !== state.fallbackGeneration || !state.fallbackActive || !isForeground()) return;
-      state.nowMs = Date.now();
+      state.nowMs = trustedNowMs();
       if (!markFallbackSnapshotUnchanged(snapshot)) applyFallbackSnapshot(snapshot);
       state.phase = "fallback";
       state.error = "";
@@ -2060,6 +2119,7 @@
     let message;
     try { message = JSON.parse(String(event.data || "")); }
     catch { return; }
+    syncTrustedClock(message?.serverTime || message?.generatedAt, "websocket");
     if (message?.type === "event" && TOPICS.includes(String(message.topic || ""))) {
       applyEvent(String(message.topic), message.payload);
     }
@@ -2127,6 +2187,7 @@
         clearSocketConnectTimer();
         stopFallbackPolling();
         state.phase = "connected";
+        state.nowMs = trustedNowMs();
         state.socketOpenedAt = Date.now();
         state.authTerminal = false;
         state.reconnectAttempt = 0;
@@ -2204,7 +2265,7 @@
   function startTicker() {
     if (state.ticker) return;
     state.ticker = setInterval(() => {
-      state.nowMs = Date.now();
+      state.nowMs = trustedNowMs();
       if (state.phase === "connected") void recordScriptCheckIn("websocket");
       if (state.phase === "fallback") void recordScriptCheckIn("compatible");
       if (!isTornPda || !state.fallbackActive) scheduleRender();
@@ -2279,6 +2340,50 @@
     '[data-ffscouter-active-filter="true"], [data-ffscouter-active-filter="1"]'
   );
 
+  function tornRosterSortState(rows, board) {
+    const rowParent = rows.find((row) => row?.parentElement)?.parentElement;
+    const scope = rowParent?.parentElement || board;
+    if (!scope?.querySelectorAll) return { column: "", order: "" };
+    const definitions = [
+      ["member", ["div.member > div", "div.name > div"]],
+      ["level", ["div.level > div"]],
+      ["points", ["div.points > div", "div.bsp > div", "div.est > div"]],
+      ["status", ["div.status > div"]],
+      ["activity", ["div.activity > div", "div.last-action > div", "div.lastAction > div"]],
+      ["location", ["div.location > div"]],
+    ];
+    const activeNode = (node) => {
+      const ariaSort = String(node?.getAttribute?.("aria-sort") || node?.closest?.("[aria-sort]")?.getAttribute?.("aria-sort") || "").toLowerCase();
+      const className = String(node?.className || "");
+      return ["ascending", "descending"].includes(ariaSort) || className.includes("activeIcon__");
+    };
+    for (const [column, selectors] of definitions) {
+      for (const selector of selectors) {
+        const node = Array.from(scope.querySelectorAll(selector)).find(activeNode);
+        if (!node) continue;
+        const signature = `${node.className || ""} ${node.closest?.("[aria-sort]")?.getAttribute?.("aria-sort") || ""}`;
+        return {
+          column,
+          order: /asc__|ascending/i.test(signature) ? "asc" : "desc",
+        };
+      }
+    }
+    const active = scope.querySelector('[aria-sort="ascending"], [aria-sort="descending"], [class*="activeIcon__"]');
+    if (!active) return { column: "", order: "" };
+    let candidate = active;
+    for (let depth = 0; candidate && candidate !== scope && depth < 4; depth += 1, candidate = candidate.parentElement) {
+      const signature = `${candidate.className || ""} ${candidate.textContent || ""}`.toLowerCase();
+      const matched = definitions.find(([column]) => signature.includes(column));
+      if (matched) {
+        return {
+          column: matched[0],
+          order: /asc__|ascending/i.test(`${active.className || ""} ${active.getAttribute?.("aria-sort") || ""}`) ? "asc" : "desc",
+        };
+      }
+    }
+    return { column: "other", order: "" };
+  }
+
   function rankedWarStatusCell(row, attackLink) {
     if (!row || !attackLink || !row.contains?.(attackLink)) return null;
     for (let candidate = attackLink; candidate && candidate !== row; candidate = candidate.parentElement) {
@@ -2291,22 +2396,78 @@
     return null;
   }
 
+  function tornStatusCategory(statusCell) {
+    if (!statusCell) return "";
+    const originalText = Array.from(statusCell.childNodes || [])
+      .filter((node) => !(node?.nodeType === 1 && node.classList?.contains?.(STATUS_DETAIL_CLASS)))
+      .map((node) => String(node?.textContent || ""))
+      .join(" ");
+    const originalClasses = [statusCell, ...Array.from(statusCell.querySelectorAll?.("*") || [])]
+      .filter((node) => !node.classList?.contains?.(STATUS_DETAIL_CLASS))
+      .map((node) => String(node.className || ""))
+      .join(" ");
+    const signature = `${originalText} ${originalClasses}`.replace(/\s+/g, " ").trim().toLowerCase();
+    if (/hospital|jail/.test(signature)) return "hospital";
+    if (/travel|abroad|returning|flying/.test(signature)) return "traveling";
+    if (/\bokay\b|available/.test(signature)) return "available";
+    return "";
+  }
+
+  function clearIntegratedStatusCell(statusCell, clearMismatch = true) {
+    if (!statusCell) return;
+    statusCell.classList.remove(STATUS_CELL_CLASS);
+    if (clearMismatch) statusCell.classList.remove(STATUS_MISMATCH_CLASS);
+    statusCell.querySelectorAll?.(`.${STATUS_DETAIL_CLASS}`).forEach((detail) => detail.remove());
+    delete statusCell.dataset.warbuddyStatusMemberId;
+    if (clearMismatch) delete statusCell.dataset.warbuddyStatusMismatch;
+  }
+
   function syncIntegratedStatusCell(row, attackLink, memberId, availability, keepStatusCells) {
-    if (!availability?.label) return;
     const statusCell = rankedWarStatusCell(row, attackLink);
     if (!statusCell) return;
+    const tornCategory = tornStatusCategory(statusCell);
+    const backendCategory = core.availabilityCategory(availability);
+    const mismatch = !!tornCategory && !!backendCategory && tornCategory !== backendCategory;
+    statusCell.classList.toggle(STATUS_MISMATCH_CLASS, mismatch);
+    if (mismatch) {
+      keepStatusCells.add(statusCell);
+      clearIntegratedStatusCell(statusCell, false);
+      statusCell.dataset.warbuddyStatusMismatch = `${tornCategory}:${backendCategory}`;
+      return;
+    }
+    delete statusCell.dataset.warbuddyStatusMismatch;
+    if (!availability?.label || (tornCategory && !backendCategory)) {
+      clearIntegratedStatusCell(statusCell);
+      return;
+    }
     keepStatusCells.add(statusCell);
     statusCell.classList.add(STATUS_CELL_CLASS);
-    statusCell.dataset.warbuddyStatusMemberId = String(memberId);
+    if (statusCell.dataset.warbuddyStatusMemberId !== String(memberId)) {
+      statusCell.dataset.warbuddyStatusMemberId = String(memberId);
+    }
     let detail = statusCell.querySelector?.(`.${STATUS_DETAIL_CLASS}`);
     if (!detail) {
       detail = document.createElement("span");
       statusCell.appendChild(detail);
     }
-    detail.className = `${STATUS_DETAIL_CLASS} ${String(availability.state || "")} ${String(availability.tone || "")}`.trim();
-    detail.textContent = availability.label;
-    detail.title = availability.title || availability.label;
-    detail.setAttribute("aria-label", availability.title || availability.label);
+    const className = `${STATUS_DETAIL_CLASS} ${String(availability.state || "")} ${String(availability.tone || "")}`.trim();
+    const title = availability.title || availability.label;
+    if (detail.className !== className) detail.className = className;
+    if (detail.textContent !== availability.label) detail.textContent = availability.label;
+    if (detail.title !== title) detail.title = title;
+    if (detail.getAttribute?.("aria-label") !== title) detail.setAttribute("aria-label", title);
+  }
+
+  function handleInlineToolAction(event) {
+    const control = event.target?.closest?.("[data-inline-action]");
+    if (!control || !event.currentTarget?.contains?.(control)) return;
+    const memberId = Number(event.currentTarget.dataset?.memberId || 0);
+    if (!Number.isSafeInteger(memberId) || memberId <= 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const action = String(control.dataset?.inlineAction || "");
+    if (action === "watch") void toggleWatchedTarget(memberId);
+    if (action === "claim") void updateDibs("claim", memberId, `inline-${memberId}`);
   }
 
   function syncIntegratedMemberTools(view = sessionView()) {
@@ -2349,6 +2510,7 @@
         tools = document.createElement("span");
         tools.className = INLINE_TOOLS_CLASS;
         tools.dataset.memberId = String(memberId);
+        tools.addEventListener("click", handleInlineToolAction);
         if (typeof anchor.insertAdjacentElement === "function") anchor.insertAdjacentElement("afterend", tools);
         else parent.insertBefore(tools, anchor.nextSibling || null);
       }
@@ -2396,26 +2558,29 @@
       if (row) {
         keepRows.add(row);
         decoratedRows.push(row);
-        row.dataset.warbuddyMemberRow = "1";
-        row.dataset.warbuddyMemberId = String(memberId);
+        if (row.dataset.warbuddyMemberRow !== "1") row.dataset.warbuddyMemberRow = "1";
+        if (row.dataset.warbuddyMemberId !== String(memberId)) row.dataset.warbuddyMemberId = String(memberId);
         row.classList.toggle("warbuddy-row-retal", flags.retaliation);
         row.classList.toggle("warbuddy-row-actionable", flags.actionable && !flags.retaliation);
         row.classList.toggle("warbuddy-roster-hidden", !core.rosterFilterMatches(state.rosterFilter, flags));
-        row.dataset.warbuddyPriority = String(core.rosterOrder(flags, member, state.nowMs));
-        row.dataset.warbuddyAvailability = availability.state;
+        const priority = String(core.rosterOrder(flags, member, state.nowMs));
+        if (row.dataset.warbuddyPriority !== priority) row.dataset.warbuddyPriority = priority;
+        if (row.dataset.warbuddyAvailability !== availability.state) row.dataset.warbuddyAvailability = availability.state;
       }
 
       const attackLink = row?.querySelector?.("a[href*='sid=attack']");
       if (attackLink) {
         keepAttackLinks.add(attackLink);
         const baseTitle = String(attackLink.title || "").replace(/\s*-?\s*Warbuddy:.*$/i, "").trim();
-        attackLink.dataset.warbuddyAttackState = isMine ? "mine" : claim ? "taken" : retaliation ? "retaliation" : "free";
+        const attackState = isMine ? "mine" : claim ? "taken" : retaliation ? "retaliation" : "free";
+        if (attackLink.dataset.warbuddyAttackState !== attackState) attackLink.dataset.warbuddyAttackState = attackState;
         attackLink.classList.toggle("warbuddy-attack-dibs-mine", isMine);
         attackLink.classList.toggle("warbuddy-attack-dibs-taken", !!claim && !isMine);
         attackLink.classList.toggle("warbuddy-attack-retal", !!retaliation);
-        attackLink.title = claim || retaliation
+        const attackTitle = claim || retaliation
           ? [baseTitle, `Warbuddy: ${claim ? dibsLabel : retaliationLabel}`].filter(Boolean).join(" - ")
           : baseTitle;
+        if (attackLink.title !== attackTitle) attackLink.title = attackTitle;
       }
       syncIntegratedStatusCell(row, attackLink, memberId, availability, keepStatusCells);
 
@@ -2423,30 +2588,30 @@
         ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
         : "";
       tools.classList.toggle("quiet", !watched && !retaliation);
-      tools.innerHTML = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && canClaim ? `<button type="button" class="wc-inline-dibs free" data-inline-action="claim" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
-
-      tools.querySelector?.('[data-inline-action="watch"]')?.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void toggleWatchedTarget(memberId);
-      });
-      tools.querySelector?.('[data-inline-action="claim"]')?.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void updateDibs("claim", memberId, `inline-${memberId}`);
-      });
+      const toolsMarkup = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && canClaim ? `<button type="button" class="wc-inline-dibs free" data-inline-action="claim" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
+      if (inlineMarkupCache.get(tools) !== toolsMarkup) {
+        tools.innerHTML = toolsMarkup;
+        inlineMarkupCache.set(tools, toolsMarkup);
+      }
     }
 
     let activeSortParent = null;
+    const tornSort = tornRosterSortState(decoratedRows, board);
     const ffscouterOwnsOrder = state.rosterPrioritySort && ffscouterFilterActive();
+    const tornOwnsOrder = state.rosterPrioritySort && !core.rosterPriorityAllowedForSort(tornSort.column);
+    const externalSortReason = ffscouterOwnsOrder
+      ? "FFScouter filtering"
+      : tornOwnsOrder
+        ? `Torn's ${tornSort.column} sort`
+        : "";
     const sortLabel = document.querySelector?.(`#${PANEL_ID} .wc-roster-sort`);
-    sortLabel?.classList.toggle("paused", ffscouterOwnsOrder);
+    sortLabel?.classList.toggle("paused", !!externalSortReason);
     if (sortLabel) {
-      sortLabel.title = ffscouterOwnsOrder
-        ? "Warbuddy ordering is paused while FFScouter filtering is active."
+      sortLabel.title = externalSortReason
+        ? `Warbuddy ordering is paused while ${externalSortReason} is active.`
         : "Prioritize Retals, Dibs, watched targets, and useful availability states.";
     }
-    if (state.rosterPrioritySort && !ffscouterOwnsOrder && decoratedRows.length > 1) {
+    if (state.rosterPrioritySort && !externalSortReason && decoratedRows.length > 1) {
       const parents = new Set(decoratedRows.map((row) => row.parentElement).filter(Boolean));
       if (parents.size === 1) {
         const parent = parents.values().next().value;
@@ -2459,7 +2624,8 @@
           activeSortParent = parent;
           parent.classList.add("warbuddy-roster-sort-parent");
           decoratedRows.forEach((row) => {
-            row.style.order = String(Number(row.dataset.warbuddyPriority || 0));
+            const order = String(Number(row.dataset.warbuddyPriority || 0));
+            if (row.style.order !== order) row.style.order = order;
           });
         }
       }
@@ -2468,11 +2634,9 @@
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((tools) => {
       if (!keep.has(Number(tools.dataset?.memberId || 0))) tools.remove();
     });
-    document.querySelectorAll?.(`.${STATUS_CELL_CLASS}`).forEach((cell) => {
+    document.querySelectorAll?.(`.${STATUS_CELL_CLASS}, .${STATUS_MISMATCH_CLASS}`).forEach((cell) => {
       if (keepStatusCells.has(cell)) return;
-      cell.classList.remove(STATUS_CELL_CLASS);
-      cell.querySelectorAll?.(`.${STATUS_DETAIL_CLASS}`).forEach((detail) => detail.remove());
-      delete cell.dataset.warbuddyStatusMemberId;
+      clearIntegratedStatusCell(cell);
     });
     document.querySelectorAll?.("[data-warbuddy-member-row]").forEach((row) => {
       if (keepRows.has(row)) {
