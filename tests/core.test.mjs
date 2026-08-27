@@ -1030,6 +1030,11 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(inlineSource, /board\?\.contains\?\.\(anchor\) \? rankedWarOwnRowForAnchor\(anchor\) : rankedWarRowForAnchor\(anchor\)/);
     assert.match(inlineSource, /core\.rosterFilterMatches\(state\.rosterFilter, flags\)/);
     assert.match(inlineSource, /core\.memberAvailability\(member, state\.nowMs\)/);
+    assert.match(inlineSource, /syncIntegratedStatusCell\(row, attackLink, memberId, availability, keepStatusCells\)/);
+    assert.doesNotMatch(inlineSource, /availabilityMarkup/);
+    assert.match(inlineSource, /tools\.classList\.toggle\("quiet", !watched && !retaliation\)/);
+    assert.match(inlineSource, /core\.dibsFeatureEnabled\(state\.settings\) && canClaim/);
+    assert.doesNotMatch(inlineSource, /data-inline-action="\$\{canClaim \? "claim" : "inspect"\}"/);
     assert.match(inlineSource, /core\.rosterOrder\(flags, member, state\.nowMs\)/);
     assert.match(inlineSource, /ffscouterFilterActive\(\)/);
     assert.match(inlineSource, /!ffscouterOwnsOrder/);
@@ -1041,6 +1046,9 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(cleanupSource, /warbuddyAvailability/);
     assert.match(mountCleanupSource, /\[data-warbuddy-roster-board\]/);
     assert.match(mountCleanupSource, /delete board\.dataset\.warbuddyRosterBoard/);
+    assert.match(source, /function rankedWarStatusCell\(row, attackLink\)/);
+    assert.match(source, /classList\.remove\(STATUS_CELL_CLASS\)/);
+    assert.match(source, /data-warbuddy-member-row.*wc-inline-dibs\.free/);
   });
 
   it("hides the whole action queue via showActionQueue while keeping the tracker-disabled notice separate", async () => {

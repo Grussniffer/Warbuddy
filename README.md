@@ -1,5 +1,11 @@
 # Warbuddy
 
+## 0.1.42
+
+- Places compact hospital, travel, and abroad details inside Torn's existing Status column instead of beside member names.
+- Keeps Torn's original status content intact underneath and restores it when Roster mode is disabled.
+- Hides unclaimed Dibs and inactive Watch controls until row hover or keyboard focus on desktop, while retaining full touch access. Existing claims use the already-colored Attack link instead of another permanent hand beside the name.
+
 ## 0.1.41
 
 - Keeps Warbuddy available on Torn attack pages without mounting it over Torn's combat controls.
@@ -83,6 +89,12 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.42 - 27 August 2026
+
+- Reuses Torn's Status column for Warbuddy availability details, removing the overlapping travel badge from the member and level area.
+- Keeps active watches, claimed Dibs, and retaliation state visible through their existing row and Attack-link states while making unused controls quiet until interaction on pointer-based devices.
+- Preserves the original Torn status DOM, mobile controls, filtering, ordering, and backend request behavior.
 
 ### 0.1.41 - 27 August 2026
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.41
+// @version      0.1.42
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -745,7 +745,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.41";
+  const SCRIPT_VERSION = "0.1.42";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -760,6 +760,8 @@
   const INTEGRATED_HOST_ID = "warbuddy-integrated-host";
   const INTEGRATED_WRAPPER_ID = "warbuddy-integrated-wrapper";
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
+  const STATUS_CELL_CLASS = "warbuddy-status-cell";
+  const STATUS_DETAIL_CLASS = "warbuddy-status-detail";
   const LEGACY_STORAGE_KEYS = {
     [KEY_STORAGE]: "lads_war_companion_api_key",
     [COLLAPSED_STORAGE]: "lads_war_companion_collapsed",
@@ -978,9 +980,13 @@
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.mine { color:#10b981; }
     .${INLINE_TOOLS_CLASS} .wc-inline-dibs.taken { color:#a1a1aa; }
     .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
-    .${INLINE_TOOLS_CLASS} .wc-inline-status { display:inline-flex; min-height:17px; align-items:center; border:1px solid #52525b; border-radius:3px; background:#27272a; color:#d4d4d8; padding:0 3px; font:700 9px/1 Arial,Helvetica,sans-serif; white-space:nowrap; }
-    .${INLINE_TOOLS_CLASS} .wc-inline-status.soon { border-color:#b45309; background:#451a03; color:#fde68a; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
+    .${STATUS_CELL_CLASS} { position:relative !important; color:transparent !important; text-shadow:none !important; }
+    .${STATUS_CELL_CLASS} > :not(.${STATUS_DETAIL_CLASS}) { visibility:hidden !important; }
+    .${STATUS_DETAIL_CLASS} { position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center; color:#22d3ee !important; font:700 10px/1.1 Arial,Helvetica,sans-serif; text-align:center; white-space:nowrap; visibility:visible !important; }
+    .${STATUS_DETAIL_CLASS}.hospital { color:#f87171 !important; }
+    .${STATUS_DETAIL_CLASS}.soon { color:#fbbf24 !important; }
+    @media (hover:hover) and (pointer:fine) { [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS}.quiet { display:none; } [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-watch:not(.active), [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-dibs.free { display:none; } }
     #${PANEL_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${PANEL_ID}.wc-collapsed .wc-body { display:none; }
     #${PANEL_ID}.wc-collapsed { width:auto; min-width:154px; max-width:calc(100vw - 20px); border-radius:999px; }
@@ -1370,6 +1376,11 @@
 
   function removeInlineMemberTools() {
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((element) => element.remove());
+    document.querySelectorAll?.(`.${STATUS_CELL_CLASS}`).forEach((cell) => {
+      cell.classList.remove(STATUS_CELL_CLASS);
+      cell.querySelectorAll?.(`.${STATUS_DETAIL_CLASS}`).forEach((detail) => detail.remove());
+      delete cell.dataset.warbuddyStatusMemberId;
+    });
     document.querySelectorAll?.("[data-warbuddy-member-row]").forEach((row) => {
       row.classList.remove("warbuddy-roster-hidden", "warbuddy-row-retal", "warbuddy-row-actionable");
       row.style?.removeProperty?.("order");
@@ -2268,6 +2279,36 @@
     '[data-ffscouter-active-filter="true"], [data-ffscouter-active-filter="1"]'
   );
 
+  function rankedWarStatusCell(row, attackLink) {
+    if (!row || !attackLink || !row.contains?.(attackLink)) return null;
+    for (let candidate = attackLink; candidate && candidate !== row; candidate = candidate.parentElement) {
+      const parent = candidate.parentElement;
+      if (!parent || !row.contains?.(parent)) continue;
+      if (candidate.previousElementSibling && Number(parent.children?.length || 0) >= 4) {
+        return candidate.previousElementSibling;
+      }
+    }
+    return null;
+  }
+
+  function syncIntegratedStatusCell(row, attackLink, memberId, availability, keepStatusCells) {
+    if (!availability?.label) return;
+    const statusCell = rankedWarStatusCell(row, attackLink);
+    if (!statusCell) return;
+    keepStatusCells.add(statusCell);
+    statusCell.classList.add(STATUS_CELL_CLASS);
+    statusCell.dataset.warbuddyStatusMemberId = String(memberId);
+    let detail = statusCell.querySelector?.(`.${STATUS_DETAIL_CLASS}`);
+    if (!detail) {
+      detail = document.createElement("span");
+      statusCell.appendChild(detail);
+    }
+    detail.className = `${STATUS_DETAIL_CLASS} ${String(availability.state || "")} ${String(availability.tone || "")}`.trim();
+    detail.textContent = availability.label;
+    detail.title = availability.title || availability.label;
+    detail.setAttribute("aria-label", availability.title || availability.label);
+  }
+
   function syncIntegratedMemberTools(view = sessionView()) {
     const canDecorate = state.active
       && state.displayMode === "integrated"
@@ -2288,6 +2329,7 @@
     const keep = new Set();
     const keepRows = new Set();
     const keepAttackLinks = new Set();
+    const keepStatusCells = new Set();
     const decoratedRows = [];
     const board = document.querySelector?.("[data-warbuddy-roster-board='1']");
     const enemyAnchors = board?.isConnected
@@ -2318,7 +2360,6 @@
         : undefined;
       const eligibility = claim ? undefined : core.dibsEligibility(member, state.nowMs);
       const isMine = !!claim && String(claim.claimedByPlayerId || "") === String(state.session?.playerId || "");
-      const dibsTone = isMine ? "mine" : claim ? "taken" : "free";
       const dibsRemaining = claim ? core.duration(core.toTimestampMs(claim.expiresAt) - state.nowMs) : "";
       const dibsLabel = claim
         ? `${isMine ? "Your Dibs" : `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId}`} - ${dibsRemaining} left`
@@ -2376,14 +2417,13 @@
           ? [baseTitle, `Warbuddy: ${claim ? dibsLabel : retaliationLabel}`].filter(Boolean).join(" - ")
           : baseTitle;
       }
+      syncIntegratedStatusCell(row, attackLink, memberId, availability, keepStatusCells);
 
       const retaliationRemaining = retaliation
         ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
         : "";
-      const availabilityMarkup = availability.label
-        ? `<span class="wc-inline-status ${escapeHtml(availability.tone || "")}" title="${escapeHtml(availability.title)}">${escapeHtml(availability.label)}</span>`
-        : "";
-      tools.innerHTML = `${availabilityMarkup}<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && (claim || eligibility?.eligible) ? `<button type="button" class="wc-inline-dibs ${dibsTone}" data-inline-action="${canClaim ? "claim" : "inspect"}" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
+      tools.classList.toggle("quiet", !watched && !retaliation);
+      tools.innerHTML = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${core.dibsFeatureEnabled(state.settings) && canClaim ? `<button type="button" class="wc-inline-dibs free" data-inline-action="claim" aria-label="${escapeHtml(dibsLabel)}" title="${escapeHtml(dibsLabel)}"${state.dibsBusyTargetId === memberId ? " disabled" : ""}>&#9995;</button>` : ""}${retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationLabel)}" title="${escapeHtml(retaliationLabel)}">Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}`;
 
       tools.querySelector?.('[data-inline-action="watch"]')?.addEventListener("click", (event) => {
         event.preventDefault();
@@ -2427,6 +2467,12 @@
 
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((tools) => {
       if (!keep.has(Number(tools.dataset?.memberId || 0))) tools.remove();
+    });
+    document.querySelectorAll?.(`.${STATUS_CELL_CLASS}`).forEach((cell) => {
+      if (keepStatusCells.has(cell)) return;
+      cell.classList.remove(STATUS_CELL_CLASS);
+      cell.querySelectorAll?.(`.${STATUS_DETAIL_CLASS}`).forEach((detail) => detail.remove());
+      delete cell.dataset.warbuddyStatusMemberId;
     });
     document.querySelectorAll?.("[data-warbuddy-member-row]").forEach((row) => {
       if (keepRows.has(row)) {
