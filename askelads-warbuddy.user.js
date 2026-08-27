@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.43
+// @version      0.1.44
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -770,7 +770,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.43";
+  const SCRIPT_VERSION = "0.1.44";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -798,6 +798,9 @@
   const FALLBACK_POLL_MS = 2_000;
   const FALLBACK_POLL_MAX_MS = 10_000;
   const FALLBACK_SOCKET_RETRY_MS = 60_000;
+  const TICKER_INTERVAL_MS = 2_000;
+  const IDLE_RENDER_INTERVAL_MS = 10_000;
+  const ROUTE_HEARTBEAT_MS = 2_000;
   const DATA_STALE_MS = 45_000;
   const SCRIPT_CHECK_IN_INTERVAL_MS = 10 * 60 * 1000;
   const SCRIPT_CHECK_IN_RETRY_MS = 60_000;
@@ -806,6 +809,7 @@
   const MAX_WATCHED_TARGETS = 25;
   const TOPICS = ["war_tracker_settings", "war_tracker", "score", "retaliation", "war_dibs"];
   const inlineMarkupCache = new WeakMap();
+  const panelMarkupCache = new WeakMap();
 
   const storage = {
     get(key, fallback = "") {
@@ -861,6 +865,8 @@
     forgetConfirmTimer: 0,
     ticker: 0,
     routeTimer: 0,
+    lastPageHref: "",
+    lastRenderAt: 0,
     pageObserver: null,
     observedBody: null,
     authPromise: null,
@@ -915,6 +921,7 @@
     attackOutcomeReleaseKey: "",
     attackOutcomeScanTimer: 0,
     attackOutcomeObserver: null,
+    integratedDecorationsActive: false,
     attackQueueOpen: false,
     moreActionsOpen: false,
     focusMode: String(storage.get(FOCUS_STORAGE, "")) === "1",
@@ -1430,6 +1437,7 @@
   }
 
   function removeInlineMemberTools() {
+    state.integratedDecorationsActive = false;
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((element) => element.remove());
     document.querySelectorAll?.(`.${STATUS_CELL_CLASS}, .${STATUS_MISMATCH_CLASS}`).forEach((cell) => {
       cell.classList.remove(STATUS_CELL_CLASS, STATUS_MISMATCH_CLASS);
@@ -2262,14 +2270,26 @@
     }
   }
 
+  function hasTimeSensitiveState() {
+    if (state.attackTargetId) return true;
+    if (state.settings?.enabled === false) return false;
+    if (currentEnemyFactionId()) return true;
+    if ((Array.isArray(state.dibs?.claims) ? state.dibs.claims : []).length > 0) return true;
+    if ((Array.isArray(state.retaliation?.attacks) ? state.retaliation.attacks : []).length > 0) return true;
+    return Array.from(state.scores.values()).some((score) => core.chainPresentation(score, state.nowMs).active);
+  }
+
   function startTicker() {
     if (state.ticker) return;
     state.ticker = setInterval(() => {
       state.nowMs = trustedNowMs();
       if (state.phase === "connected") void recordScriptCheckIn("websocket");
       if (state.phase === "fallback") void recordScriptCheckIn("compatible");
-      if (!isTornPda || !state.fallbackActive) scheduleRender();
-    }, 1_000);
+      const renderInterval = hasTimeSensitiveState() ? TICKER_INTERVAL_MS : IDLE_RENDER_INTERVAL_MS;
+      if ((!isTornPda || !state.fallbackActive) && Date.now() - state.lastRenderAt >= renderInterval) {
+        scheduleRender();
+      }
+    }, TICKER_INTERVAL_MS);
   }
 
   function stopTicker() {
@@ -2477,9 +2497,10 @@
       && Array.isArray(view?.enemyRoster)
       && view.enemyRoster.length > 0;
     if (!canDecorate) {
-      removeInlineMemberTools();
+      if (state.integratedDecorationsActive) removeInlineMemberTools();
       return;
     }
+    state.integratedDecorationsActive = true;
 
     const members = new Map(view.enemyRoster.map((member) => [Number(member?.member_id || 0), member]));
     const watchedIds = new Set(savedTargetIds());
@@ -3178,6 +3199,7 @@
       removeIntegratedMount(false);
       return;
     }
+    state.lastRenderAt = Date.now();
     const view = sessionView();
     const mountState = resolvePanelMount(view);
     const mount = mountState.mount || document.body;
@@ -3322,7 +3344,15 @@
       <button class="wc-button wc-icon" data-action="collapse" aria-expanded="${state.collapsed ? "false" : "true"}" aria-label="${state.collapsed ? "Expand and resume Warbuddy" : "Collapse and pause Warbuddy"}" title="${state.collapsed ? "Expand and resume" : "Collapse and pause"}">${state.collapsed ? "+" : "-"}</button>
     </div>`;
     const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts">${rosterChainMarkup ? `<span class="wc-roster-chains">${rosterChainMarkup}</span>` : ""}<span class="wc-roster-watched">Watched ${savedTargetIds().length}</span><span>Queue ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
-    panel.innerHTML = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
+    const panelMarkup = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
+    if (panelMarkupCache.get(panel) === panelMarkup && panel.querySelector(".wc-body")) {
+      applyStoredPanelPosition();
+      positionOpenDibsTip(panel);
+      syncIntegratedMemberTools(view);
+      return;
+    }
+    panel.innerHTML = panelMarkup;
+    panelMarkupCache.set(panel, panelMarkup);
 
     const nextBody = panel.querySelector(".wc-body");
     if (nextBody) {
@@ -3623,7 +3653,7 @@
     startPageObserver();
     syncPageActivation();
     syncForegroundState();
-    if (!state.routeTimer) state.routeTimer = setInterval(syncPageActivation, 1_000);
+    if (!state.routeTimer) state.routeTimer = setInterval(pollPageActivation, ROUTE_HEARTBEAT_MS);
   }
 
   function startPageObserver() {
@@ -3637,11 +3667,21 @@
     state.pageObserver.observe(document.body, { childList: true });
   }
 
+  function pollPageActivation() {
+    if (document.visibilityState === "hidden") return;
+    const href = window.location.href;
+    if (href !== state.lastPageHref || (state.active && !document.getElementById(PANEL_ID))) {
+      syncPageActivation();
+    }
+  }
+
   function syncPageActivation() {
     if (document.visibilityState === "hidden") return;
     startPageObserver();
-    const active = core.isWarbuddyPageUrl(window.location.href);
-    const nextAttackTargetId = active ? core.attackPageTargetId(window.location.href) : 0;
+    const href = window.location.href;
+    state.lastPageHref = href;
+    const active = core.isWarbuddyPageUrl(href);
+    const nextAttackTargetId = active ? core.attackPageTargetId(href) : 0;
     const attackTargetChanged = nextAttackTargetId !== state.attackTargetId;
     if (attackTargetChanged) {
       state.attackTargetId = nextAttackTargetId;
@@ -3679,7 +3719,7 @@
       syncForegroundState();
       return;
     }
-    state.nowMs = Date.now();
+    state.nowMs = trustedNowMs();
     syncPageActivation();
     syncForegroundState();
     scheduleRender();

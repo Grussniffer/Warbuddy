@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.44
+
+- Keeps WebSocket changes immediate while repainting live countdowns at most every two seconds.
+- Drops static and no-war repainting to once every ten seconds.
+- Reuses identical panel markup and avoids repeated full-page cleanup scans in Floating mode.
+- Checks Torn's route only when the URL or panel actually changes.
+
 ## 0.1.43
 
 - Pauses Warbuddy priority ordering while Torn is actively sorting a non-status column, while retaining the existing FFScouter handoff.
@@ -96,6 +103,16 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.44 - 27 August 2026
+
+- Keeps roster, score, retaliation, and Dibs WebSocket messages event-driven and immediate.
+- Reduces timer-driven panel rebuilds from every second to every two seconds during live timing, and every ten seconds while idle or outside a war.
+- Skips replacing identical panel markup, preserving existing listeners and scroll state while avoiding needless layout and style work.
+- Stops repeatedly scanning Torn's document for integrated controls when Floating mode has nothing mounted to remove.
+- Replaces the unconditional route rescan with a lightweight URL and missing-panel check every two seconds.
+- Leaves compatible fallback polling adaptive at 2-10 seconds, and keeps all socket, fallback, ticker, and render work paused while the Floating panel is collapsed or the tab is hidden.
+- Adds no Torn API calls, backend endpoint, database migration, or cache traffic.
 
 ### 0.1.43 - 27 August 2026
 

@@ -704,11 +704,26 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes("core.fallbackPollDelayMs({"));
     assert.ok(source.includes("revision=${encodeURIComponent(state.fallbackRevision)}"));
     assert.ok(source.includes("markFallbackSnapshotUnchanged(snapshot)"));
-    assert.ok(source.includes("if (!isTornPda || !state.fallbackActive) scheduleRender()"));
+    assert.ok(source.includes("(!isTornPda || !state.fallbackActive) && Date.now() - state.lastRenderAt >= renderInterval"));
     assert.ok(source.includes('state.pageObserver.observe(document.body, { childList: true })'));
     assert.ok(!source.includes('state.pageObserver.observe(document.body, { childList: true, subtree: true })'));
     assert.ok(source.includes('document.addEventListener("visibilitychange", syncVisibilityState)'));
     assert.ok(source.includes("cancelAnimationFrame(state.renderFrame)"));
+  });
+
+  it("keeps socket updates immediate while throttling idle browser work", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+
+    assert.ok(source.includes("const TICKER_INTERVAL_MS = 2_000"));
+    assert.ok(source.includes("const IDLE_RENDER_INTERVAL_MS = 10_000"));
+    assert.ok(source.includes("const ROUTE_HEARTBEAT_MS = 2_000"));
+    assert.ok(source.includes("const renderInterval = hasTimeSensitiveState() ? TICKER_INTERVAL_MS : IDLE_RENDER_INTERVAL_MS"));
+    assert.ok(source.includes("Date.now() - state.lastRenderAt >= renderInterval"));
+    assert.ok(source.includes("setInterval(pollPageActivation, ROUTE_HEARTBEAT_MS)"));
+    assert.ok(source.includes("href !== state.lastPageHref || (state.active && !document.getElementById(PANEL_ID))"));
+    assert.ok(source.includes("panelMarkupCache.get(panel) === panelMarkup && panel.querySelector(\".wc-body\")"));
+    assert.ok(source.includes("if (state.integratedDecorationsActive) removeInlineMemberTools()"));
+    assert.doesNotMatch(source, /setInterval\(syncPageActivation,\s*1_000\)/);
   });
 
   it("keeps urgent fallback polling fast and backs off quiet snapshots", () => {
@@ -874,7 +889,7 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('if (action === "release") applyReleasedTargetWatchState(memberId, response)'));
   });
 
-  it("does not start the one-second ticker before a key is submitted", async () => {
+  it("does not start the live ticker before a key is submitted", async () => {
     const page = await bootUserscript("https://www.torn.com/factions.php?step=your&type=1", {
       visibilityState: "visible",
     });
@@ -1134,7 +1149,7 @@ describe("Warbuddy userscript source contracts", () => {
     ));
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
 
-    assert.match(activationSource, /const nextAttackTargetId = active \? core\.attackPageTargetId\(window\.location\.href\) : 0/);
+    assert.match(activationSource, /const nextAttackTargetId = active \? core\.attackPageTargetId\(href\) : 0/);
     assert.match(attackCardSource, /if \(!state\.attackTargetId\) return ""/);
     assert.match(attackCardSource, /Current Torn target/);
     assert.match(attackCardSource, /member \? dibsMarkup\(member, view, claim, `attack-\$\{memberId\}`\) : ""/);
