@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.45
+// @version      0.1.46
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -763,6 +763,386 @@
   };
 });
 
+(function initializeWarbuddyTabBroker(globalScope, factory) {
+  const api = factory();
+  if (typeof module === "object" && module?.exports) module.exports = api;
+  if (globalScope && typeof globalScope === "object") globalScope.WarbuddyTabBroker = api;
+})(typeof globalThis === "object" ? globalThis : this, function createWarbuddyTabBrokerApi() {
+  "use strict";
+
+  const PROTOCOL = "warbuddy-tab-broker-v1";
+  const FORBIDDEN_FIELD = /(?:authorization|api.?key|token)/i;
+  const noop = () => {};
+  const normalizeId = (value) => String(value || "").trim();
+  const randomId = () => {
+    try {
+      if (typeof globalThis?.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+    } catch {
+      // A userscript sandbox may expose crypto without all methods.
+    }
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  };
+
+  function containsSecretField(value, seen = new Set()) {
+    if (!value || typeof value !== "object") return false;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    if (Array.isArray(value)) return value.some((entry) => containsSecretField(entry, seen));
+    return Object.entries(value).some(([key, entry]) => FORBIDDEN_FIELD.test(key) || containsSecretField(entry, seen));
+  }
+
+  function createConnectionBroker(options = {}) {
+    const BroadcastChannelCtor = options.BroadcastChannelCtor
+      || (typeof globalThis === "object" ? globalThis.BroadcastChannel : undefined);
+    const now = typeof options.now === "function" ? options.now : Date.now;
+    const setIntervalFn = options.setIntervalFn || setInterval;
+    const clearIntervalFn = options.clearIntervalFn || clearInterval;
+    const setTimeoutFn = options.setTimeoutFn || setTimeout;
+    const clearTimeoutFn = options.clearTimeoutFn || clearTimeout;
+    const heartbeatMs = Math.max(10, Number(options.heartbeatMs || 1_000));
+    const leaderTimeoutMs = Math.max(heartbeatMs * 2, Number(options.leaderTimeoutMs || 3_500));
+    const electionGraceMs = Math.max(0, Number(options.electionGraceMs ?? 120));
+    const idleGraceMs = Math.max(0, Number(options.idleGraceMs ?? 2_500));
+    const requestTimeoutMs = Math.max(10, Number(options.requestTimeoutMs || 10_000));
+    const tabId = normalizeId(options.tabId) || randomId();
+    const channelName = normalizeId(options.channelName) || "warbuddy-live-connection";
+    const onRoleChange = typeof options.onRoleChange === "function" ? options.onRoleChange : noop;
+    const onLeaderChange = typeof options.onLeaderChange === "function" ? options.onLeaderChange : noop;
+    const onDemandChange = typeof options.onDemandChange === "function" ? options.onDemandChange : noop;
+    const onData = typeof options.onData === "function" ? options.onData : noop;
+    const onRequest = typeof options.onRequest === "function"
+      ? options.onRequest
+      : () => Promise.reject(new Error("Shared request is unsupported"));
+
+    let channel = null;
+    try {
+      if (typeof BroadcastChannelCtor === "function") channel = new BroadcastChannelCtor(channelName);
+    } catch {
+      channel = null;
+    }
+    if (!channel) {
+      return Object.freeze({
+        enabled: false,
+        tabId,
+        setScope: noop,
+        setActive: noop,
+        isLeader: () => true,
+        hasLeader: () => false,
+        leaderId: () => "",
+        hasDemand: () => false,
+        shouldOwnTransport: () => true,
+        broadcast: () => false,
+        request: () => Promise.reject(new Error("Cross-tab sharing is unavailable")),
+        close: noop,
+        diagnostics: () => ({ enabled: false, role: "standalone", tabId }),
+      });
+    }
+
+    let closed = false;
+    let scope = "";
+    let active = false;
+    let leader = "";
+    let leaderSeenAt = 0;
+    let role = "follower";
+    let demand = false;
+    let idleUntil = 0;
+    let electionTimer = 0;
+    let probedLeader = "";
+    let leaderProbeUntil = 0;
+    let requestSequence = 0;
+    const peers = new Map();
+    const pendingRequests = new Map();
+
+    const post = (message) => {
+      if (closed || !scope || containsSecretField(message)) return false;
+      try {
+        channel.postMessage({ protocol: PROTOCOL, scope, from: tabId, at: now(), ...message });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const currentDemand = () => {
+      const cutoff = now() - leaderTimeoutMs;
+      if (active) return true;
+      for (const peer of peers.values()) if (peer.active && peer.seenAt >= cutoff) return true;
+      return false;
+    };
+    const refreshDemand = () => {
+      const next = currentDemand();
+      if (next === demand) return;
+      demand = next;
+      if (demand) idleUntil = 0;
+      else if (role === "leader") idleUntil = now() + idleGraceMs;
+      onDemandChange(demand);
+    };
+    const setLeader = (nextLeader, seenAt = now()) => {
+      const normalized = normalizeId(nextLeader);
+      const changed = normalized !== leader;
+      leader = normalized;
+      leaderSeenAt = normalized ? seenAt : 0;
+      probedLeader = "";
+      leaderProbeUntil = 0;
+      if (changed) onLeaderChange(leader, leader === tabId);
+    };
+    const setRole = (nextRole) => {
+      if (role === nextRole) return;
+      role = nextRole;
+      onRoleChange(role === "leader", role);
+    };
+    const announcePresence = () => post({ kind: "presence", active });
+    const resign = () => {
+      if (role === "leader") post({ kind: "resign" });
+      setRole("follower");
+      if (leader === tabId) setLeader("");
+      idleUntil = 0;
+    };
+    const becomeLeader = () => {
+      if (closed || !scope || !currentDemand()) return;
+      setLeader(tabId);
+      setRole("leader");
+      idleUntil = 0;
+      post({ kind: "leader" });
+    };
+    const elect = () => {
+      electionTimer = 0;
+      if (closed || !scope || !currentDemand()) return;
+      if (leader && now() - leaderSeenAt <= leaderTimeoutMs) return;
+      const cutoff = now() - leaderTimeoutMs;
+      const candidates = active ? [tabId] : [];
+      for (const [peerId, peer] of peers) if (peer.active && peer.seenAt >= cutoff) candidates.push(peerId);
+      candidates.sort();
+      if (candidates[0] === tabId) becomeLeader();
+    };
+    const scheduleElection = (delay = electionGraceMs) => {
+      if (closed || electionTimer || !scope || !currentDemand()) return;
+      electionTimer = setTimeoutFn(elect, Math.max(0, delay));
+    };
+    const rejectPendingRequests = (message) => {
+      for (const pending of pendingRequests.values()) {
+        clearTimeoutFn(pending.timer);
+        pending.reject(new Error(message));
+      }
+      pendingRequests.clear();
+    };
+    const handleRequest = (message) => {
+      if (role !== "leader" || normalizeId(message.to) !== tabId) return;
+      const requestId = normalizeId(message.requestId);
+      if (!requestId || !message.requestType || containsSecretField(message.payload)) return;
+      Promise.resolve()
+        .then(() => onRequest(String(message.requestType), message.payload, normalizeId(message.from)))
+        .then((payload) => {
+          if (post({ kind: "response", to: message.from, requestId, success: true, payload })) return;
+          post({
+            kind: "response",
+            to: message.from,
+            requestId,
+            success: false,
+            error: "Shared response could not be sent safely",
+          });
+        })
+        .catch((error) => post({
+          kind: "response",
+          to: message.from,
+          requestId,
+          success: false,
+          error: String(error?.message || "Shared request failed"),
+        }));
+    };
+    const handleResponse = (message) => {
+      if (normalizeId(message.to) !== tabId) return;
+      const requestId = normalizeId(message.requestId);
+      const pending = pendingRequests.get(requestId);
+      if (!pending) return;
+      pendingRequests.delete(requestId);
+      clearTimeoutFn(pending.timer);
+      if (message.success === false) pending.reject(new Error(String(message.error || "Shared request failed")));
+      else pending.resolve(message.payload);
+    };
+    const handleMessage = (event) => {
+      const message = event?.data;
+      if (
+        closed || !message || message.protocol !== PROTOCOL
+        || normalizeId(message.scope) !== scope || normalizeId(message.from) === tabId
+        || containsSecretField(message)
+      ) return;
+      const sender = normalizeId(message.from);
+      const seenAt = now();
+      if (message.kind === "bye") {
+        peers.delete(sender);
+        refreshDemand();
+        if (leader === sender) {
+          setLeader("");
+          scheduleElection(0);
+        }
+        return;
+      }
+      const peer = peers.get(sender) || { active: false, seenAt: 0 };
+      peer.seenAt = seenAt;
+      if (message.kind === "presence") peer.active = message.active === true;
+      peers.set(sender, peer);
+      refreshDemand();
+      if (message.kind === "presence" && role === "leader") {
+        post({ kind: "leader" });
+        return;
+      }
+      if (message.kind === "leader") {
+        const leaderIsFresh = leader && now() - leaderSeenAt <= leaderTimeoutMs;
+        if (role === "leader" && sender !== tabId) {
+          if (sender < tabId) {
+            post({ kind: "resign" });
+            setRole("follower");
+            setLeader(sender, seenAt);
+          } else post({ kind: "leader" });
+          return;
+        }
+        if (!leaderIsFresh || leader === sender || (leader && sender < leader)) setLeader(sender, seenAt);
+        return;
+      }
+      if (message.kind === "probe") {
+        if (role === "leader" && normalizeId(message.to) === tabId) post({ kind: "leader" });
+        return;
+      }
+      if (message.kind === "resign") {
+        if (leader === sender) {
+          setLeader("");
+          scheduleElection(0);
+        }
+        return;
+      }
+      if (message.kind === "request") return handleRequest(message);
+      if (message.kind === "response") return handleResponse(message);
+      if (message.kind === "data" && sender === leader) {
+        leaderSeenAt = seenAt;
+        onData(String(message.dataType || ""), message.payload, sender);
+      }
+    };
+    channel.addEventListener?.("message", handleMessage);
+    if (!channel.addEventListener) channel.onmessage = handleMessage;
+
+    const maintain = () => {
+      if (closed || !scope) return;
+      const cutoff = now() - leaderTimeoutMs;
+      for (const [peerId, peer] of peers) if (peer.seenAt < cutoff) peers.delete(peerId);
+      refreshDemand();
+      if (role === "leader") {
+        announcePresence();
+        if (!demand && idleUntil && now() >= idleUntil) return resign();
+        post({ kind: "leader" });
+        return;
+      }
+      if (leader && now() - leaderSeenAt > leaderTimeoutMs) {
+        if (probedLeader !== leader) {
+          probedLeader = leader;
+          leaderProbeUntil = now() + heartbeatMs;
+          post({ kind: "probe", to: leader });
+          return;
+        }
+        if (now() < leaderProbeUntil) return;
+        setLeader("");
+      }
+      announcePresence();
+      if (!leader && demand) scheduleElection(0);
+    };
+    const maintenanceTimer = setIntervalFn(maintain, heartbeatMs);
+
+    const setScope = (value) => {
+      const nextScope = normalizeId(value);
+      if (nextScope === scope) return;
+      if (scope) {
+        if (role === "leader") post({ kind: "resign" });
+        post({ kind: "bye" });
+      }
+      if (electionTimer) clearTimeoutFn(electionTimer);
+      electionTimer = 0;
+      rejectPendingRequests("Shared connection identity changed");
+      peers.clear();
+      setRole("follower");
+      setLeader("");
+      demand = false;
+      idleUntil = 0;
+      scope = nextScope;
+      if (scope) {
+        announcePresence();
+        refreshDemand();
+        if (active) scheduleElection();
+      }
+    };
+    const setActive = (value) => {
+      const nextActive = value === true;
+      if (nextActive === active) {
+        if (scope) announcePresence();
+        return;
+      }
+      active = nextActive;
+      announcePresence();
+      refreshDemand();
+      if (active && !leader) scheduleElection();
+    };
+    const request = (requestType, payload = {}, timeout = requestTimeoutMs) => {
+      if (containsSecretField(payload)) return Promise.reject(new Error("Secrets cannot be sent between Warbuddy tabs"));
+      if (role === "leader") return Promise.resolve().then(() => onRequest(String(requestType || ""), payload, tabId));
+      if (!leader || now() - leaderSeenAt > leaderTimeoutMs) return Promise.reject(new Error("Shared live connection is unavailable"));
+      const requestId = `${tabId}-${++requestSequence}-${now()}`;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeoutFn(() => {
+          pendingRequests.delete(requestId);
+          reject(new Error(`${String(requestType || "Request")} timed out`));
+        }, Math.max(10, Number(timeout || requestTimeoutMs)));
+        pendingRequests.set(requestId, { resolve, reject, timer });
+        if (!post({ kind: "request", to: leader, requestId, requestType: String(requestType || ""), payload })) {
+          pendingRequests.delete(requestId);
+          clearTimeoutFn(timer);
+          reject(new Error("Shared request could not be sent"));
+        }
+      });
+    };
+    const close = () => {
+      if (closed) return;
+      if (role === "leader") post({ kind: "resign" });
+      post({ kind: "bye" });
+      closed = true;
+      if (electionTimer) clearTimeoutFn(electionTimer);
+      clearIntervalFn(maintenanceTimer);
+      rejectPendingRequests("Warbuddy tab closed");
+      try { channel.close(); } catch { /* Already closed. */ }
+      peers.clear();
+      setRole("follower");
+      setLeader("");
+    };
+
+    return Object.freeze({
+      enabled: true,
+      tabId,
+      setScope,
+      setActive,
+      isLeader: () => role === "leader",
+      hasLeader: () => !!leader && now() - leaderSeenAt <= leaderTimeoutMs,
+      leaderId: () => leader,
+      hasDemand: () => currentDemand(),
+      shouldOwnTransport: () => role === "leader" && (currentDemand() || (idleUntil > 0 && now() < idleUntil)),
+      broadcast(dataType, payload) {
+        if (role !== "leader" || containsSecretField(payload)) return false;
+        return post({ kind: "data", dataType: String(dataType || ""), payload });
+      },
+      request,
+      close,
+      diagnostics: () => ({
+        enabled: true,
+        role,
+        tabId,
+        leaderId: leader,
+        active,
+        demand: currentDemand(),
+        peerCount: peers.size,
+        scope: scope ? "set" : "unset",
+      }),
+    });
+  }
+
+  return Object.freeze({ PROTOCOL, containsSecretField, createConnectionBroker });
+});
+
 (function runWarbuddy() {
   "use strict";
 
@@ -770,7 +1150,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.45";
+  const SCRIPT_VERSION = "0.1.46";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -782,6 +1162,7 @@
   const ROSTER_CONTROLS_STORAGE = "warbuddy_roster_controls_open";
   const ROSTER_FILTER_STORAGE = "warbuddy_roster_filter";
   const ROSTER_SORT_STORAGE = "warbuddy_roster_priority_sort";
+  const BROKER_NONCE_STORAGE = "warbuddy_connection_channel_nonce";
   const INTEGRATED_HOST_ID = "warbuddy-integrated-host";
   const INTEGRATED_WRAPPER_ID = "warbuddy-integrated-wrapper";
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
@@ -802,6 +1183,7 @@
   const IDLE_RENDER_INTERVAL_MS = 10_000;
   const ROUTE_HEARTBEAT_MS = 2_000;
   const DATA_STALE_MS = 45_000;
+  const BROKER_NONCE_RECHECK_MS = 2_000;
   const SCRIPT_CHECK_IN_INTERVAL_MS = 10 * 60 * 1000;
   const SCRIPT_CHECK_IN_RETRY_MS = 60_000;
   const isTornPda = typeof window.PDA_httpGet === "function" || typeof window.PDA_httpPost === "function";
@@ -833,6 +1215,28 @@
     storage.set(key, legacyValue);
     storage.remove(legacyKey);
   }
+
+  const createBrokerNonce = () => {
+    try {
+      const bytes = new Uint32Array(4);
+      globalThis.crypto?.getRandomValues?.(bytes);
+      if (bytes.some((value) => value !== 0)) {
+        return Array.from(bytes, (value) => value.toString(16).padStart(8, "0")).join("");
+      }
+    } catch {
+      // Fall through to userscript-local entropy in older browser sandboxes.
+    }
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  };
+  const validBrokerNonce = (value) => /^[a-z0-9_-]{24,128}$/i.test(String(value || ""));
+  const storedBrokerNonce = () => {
+    const existing = String(storage.get(BROKER_NONCE_STORAGE, "") || "");
+    if (validBrokerNonce(existing)) return existing;
+    const created = createBrokerNonce();
+    storage.set(BROKER_NONCE_STORAGE, created);
+    const persisted = String(storage.get(BROKER_NONCE_STORAGE, created) || created);
+    return validBrokerNonce(persisted) ? persisted : created;
+  };
 
   const state = {
     phase: "idle",
@@ -935,7 +1339,13 @@
     dragging: false,
     lastSocketErrorAt: "",
     lastSocketClose: null,
+    sharedSocketOpen: false,
+    sharedTransportPhase: "",
+    brokerNonce: "",
+    lastBrokerNonceCheckAt: 0,
   };
+
+  let tabBroker = null;
 
   const notificationKinds = ["landing", "hospital", "attackable", "retaliation"];
   try {
@@ -1238,7 +1648,18 @@
   };
   const isOnline = () => typeof navigator === "undefined" || navigator.onLine !== false;
   const transportIsLive = () => state.phase === "connected" || state.phase === "fallback";
-  const socketIsOpen = () => Number(state.socket?.readyState) === 1;
+  const sharedBrokerEnabled = () => tabBroker?.enabled === true;
+  const shouldRunOwnedTransport = () => sharedBrokerEnabled()
+    ? tabBroker.shouldOwnTransport()
+    : isForeground();
+  const localSessionNeedsRefresh = () => {
+    if (!isForeground()) return false;
+    const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
+    return !state.session || !state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000;
+  };
+  const directSocketIsOpen = () => Number(state.socket?.readyState) === 1;
+  const socketIsOpen = () => directSocketIsOpen()
+    || (sharedBrokerEnabled() && !tabBroker.isLeader() && state.sharedSocketOpen);
   const dataIsStale = () => socketIsOpen()
     ? state.lastLiveDataAt < state.socketOpenedAt
     : state.lastLiveDataAt > 0 && state.nowMs - state.lastLiveDataAt > DATA_STALE_MS;
@@ -1354,6 +1775,95 @@
   const fallbackIsFresh = () => state.fallbackActive
     && Number.isFinite(Date.parse(state.lastFallbackAt))
     && Date.parse(state.lastFallbackAt) > Date.now() - (FALLBACK_POLL_MAX_MS * 3);
+
+  function initializeTabBroker(nonce = storedBrokerNonce()) {
+    const brokerApi = globalThis.WarbuddyTabBroker;
+    state.brokerNonce = nonce;
+    state.lastBrokerNonceCheckAt = Date.now();
+    if (!brokerApi || typeof brokerApi.createConnectionBroker !== "function") {
+      tabBroker = null;
+      return;
+    }
+    tabBroker = brokerApi.createConnectionBroker({
+      channelName: "warbuddy-live-" + nonce,
+      BroadcastChannelCtor: globalThis.BroadcastChannel || window.BroadcastChannel,
+      onRoleChange: handleTabBrokerRoleChange,
+      onLeaderChange: handleTabBrokerLeaderChange,
+      onDemandChange: handleTabBrokerDemandChange,
+      onData: handleTabBrokerData,
+      onRequest: handleTabBrokerRequest,
+    });
+  }
+
+  function syncTabBrokerNonce(force = false) {
+    const now = Date.now();
+    if (!force && tabBroker && now - state.lastBrokerNonceCheckAt < BROKER_NONCE_RECHECK_MS) return false;
+    state.lastBrokerNonceCheckAt = now;
+    const nonce = storedBrokerNonce();
+    if (tabBroker && nonce === state.brokerNonce) return false;
+    tabBroker?.close();
+    tabBroker = null;
+    closeOwnedTransport("Shared channel changed");
+    initializeTabBroker(nonce);
+    syncTabBrokerIdentity();
+    return true;
+  }
+
+  function syncTabBrokerIdentity() {
+    if (!sharedBrokerEnabled()) return;
+    const factionId = String(state.session?.factionId || "");
+    const playerId = String(state.session?.playerId || "");
+    tabBroker.setScope(factionId && playerId ? factionId + ":" + playerId : "");
+    tabBroker.setActive(!!getStoredKey() && !state.authTerminal && isForeground());
+  }
+
+  function releaseTabBrokerIdentity() {
+    if (!sharedBrokerEnabled()) return;
+    tabBroker.setActive(false);
+    tabBroker.setScope("");
+    state.sharedSocketOpen = false;
+    state.sharedTransportPhase = "";
+  }
+
+  function handleTabBrokerRoleChange(isLeader) {
+    if (!sharedBrokerEnabled()) return;
+    if (isLeader) {
+      state.sharedSocketOpen = false;
+      state.sharedTransportPhase = "";
+      if (tabBroker.shouldOwnTransport()) void ensureConnected();
+    } else {
+      closeOwnedTransport("Shared connection transferred");
+      state.sharedSocketOpen = false;
+      state.sharedTransportPhase = "";
+      if (isForeground() && tabBroker.hasLeader()) requestSharedState();
+    }
+    scheduleRender();
+  }
+
+  function handleTabBrokerLeaderChange(leaderId, isSelf) {
+    if (isSelf || !leaderId) return;
+    if (state.socket) closeOwnedTransport("Shared connection transferred");
+    state.sharedSocketOpen = false;
+    state.sharedTransportPhase = "";
+    if (isForeground()) requestSharedState();
+  }
+
+  function handleTabBrokerDemandChange(hasDemand) {
+    if (!sharedBrokerEnabled() || !tabBroker.isLeader()) return;
+    if (hasDemand || tabBroker.shouldOwnTransport()) void ensureConnected();
+  }
+
+  function requestSharedState() {
+    if (!sharedBrokerEnabled() || tabBroker.isLeader() || !tabBroker.hasLeader()) return;
+    tabBroker.request("state", {}, 5_000)
+      .then(applySharedState)
+      .catch(() => {
+        if (isForeground() && !state.sharedSocketOpen) {
+          state.phase = "connecting";
+          scheduleRender();
+        }
+      });
+  }
 
   function tornPageNowMs() {
     const pageWindow = globalThis.unsafeWindow && typeof globalThis.unsafeWindow === "object"
@@ -1736,6 +2246,7 @@
     state.authTerminal = false;
     state.error = "";
     loadTargetGroups();
+    syncTabBrokerIdentity();
   }
 
   function invalidateAuthentication() {
@@ -1827,7 +2338,7 @@
     state.socketRequests.clear();
   }
 
-  function requestSocketAction(action, payload = {}, timeoutMs = 10_000) {
+  function requestDirectSocketAction(action, payload = {}, timeoutMs = 10_000) {
     const socket = state.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Live connection is unavailable"));
     const id = `wc-action-${++state.socketRequestSequence}-${Date.now()}`;
@@ -1839,6 +2350,14 @@
       state.socketRequests.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ type: "request", id, action, payload: { ...payload, wsSessionToken: state.token } }));
     });
+  }
+
+  function requestSocketAction(action, payload = {}, timeoutMs = 10_000) {
+    if (directSocketIsOpen()) return requestDirectSocketAction(action, payload, timeoutMs);
+    if (sharedBrokerEnabled() && !tabBroker.isLeader() && state.sharedSocketOpen) {
+      return tabBroker.request("socket-action", { action, payload }, timeoutMs);
+    }
+    return Promise.reject(new Error("Live connection is unavailable"));
   }
 
   function maybeLoadEnemyLoadouts() {
@@ -1859,7 +2378,7 @@
       });
   }
 
-  function closeSocket() {
+  function closeOwnedTransport(message = "Live connection closed") {
     clearTimeout(state.reconnectTimer);
     state.reconnectTimer = 0;
     stopFallbackPolling();
@@ -1867,7 +2386,7 @@
     const socket = state.socket;
     state.socket = null;
     state.socketOpenedAt = 0;
-    rejectSocketRequests();
+    rejectSocketRequests(message);
     if (socket && socket.readyState < WebSocket.CLOSING) {
       socket.close(1000, "Paused");
     }
@@ -1885,14 +2404,15 @@
       at: new Date().toISOString(),
     };
     state.error = "";
-    state.phase = fallbackIsFresh() ? "fallback" : isForeground() ? "connecting" : "paused";
+    state.phase = fallbackIsFresh() ? "fallback" : shouldRunOwnedTransport() ? "connecting" : "paused";
     try {
       if (socket.readyState < WebSocket.CLOSING) socket.close(4000, reason);
     } catch {
       // A rejected browser handshake may discard the socket before close() runs.
     }
     scheduleRender();
-    if (isForeground()) {
+    publishSharedTransport();
+    if (shouldRunOwnedTransport()) {
       startFallbackPolling();
       scheduleReconnect();
     }
@@ -1909,7 +2429,7 @@
     }
   }
 
-  function requestRosterSnapshot() {
+  function requestDirectRosterSnapshot() {
     const socket = state.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (state.fallbackActive) pollFallbackSnapshot();
@@ -1920,6 +2440,18 @@
       if (socket !== state.socket || socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify({ type: "subscribe", id: `wc-resub-${Date.now()}`, topic: "war_tracker", payload: { wsSessionToken: state.token } }));
     }, 100);
+  }
+
+  function requestRosterSnapshot() {
+    if (directSocketIsOpen()) {
+      requestDirectRosterSnapshot();
+      return;
+    }
+    if (sharedBrokerEnabled() && !tabBroker.isLeader() && state.sharedSocketOpen) {
+      tabBroker.request("roster-snapshot", {}, 5_000).catch(() => undefined);
+      return;
+    }
+    if (state.fallbackActive) pollFallbackSnapshot();
   }
 
   function applyDibsSnapshot(payload) {
@@ -2031,6 +2563,117 @@
     return true;
   }
 
+  function sharedTransportPayload() {
+    return {
+      phase: state.phase,
+      error: state.error,
+      socketOpen: directSocketIsOpen(),
+      socketOpenedAt: state.socketOpenedAt,
+      fallbackActive: state.fallbackActive,
+      lastFallbackAt: state.lastFallbackAt,
+      lastFallbackError: state.lastFallbackError,
+      lastLiveDataAt: state.lastLiveDataAt,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  function sharedStatePayload() {
+    return {
+      ...sharedTransportPayload(),
+      settings: state.settings,
+      rosters: Array.from(state.rosters.entries()),
+      factionNames: Array.from(state.factionNames.entries()),
+      scores: Array.from(state.scores.entries()),
+      retaliation: state.retaliation,
+      loadouts: Array.from(state.loadouts.entries()),
+      dibs: state.dibs,
+      rosterDataAt: Array.from(state.rosterDataAt.entries()),
+      fallbackRevision: state.fallbackRevision,
+    };
+  }
+
+  function publishSharedTransport() {
+    if (sharedBrokerEnabled() && tabBroker.isLeader()) {
+      tabBroker.broadcast("transport", sharedTransportPayload());
+    }
+  }
+
+  function applySharedTransport(payload) {
+    if (!payload || tabBroker?.isLeader()) return;
+    const phase = String(payload.phase || "");
+    state.sharedSocketOpen = payload.socketOpen === true && phase === "connected";
+    state.sharedTransportPhase = phase;
+    if (["connected", "fallback", "connecting", "authenticating", "error", "paused"].includes(phase)) {
+      state.phase = phase;
+    }
+    state.error = String(payload.error || "");
+    state.socketOpenedAt = Number(payload.socketOpenedAt || 0);
+    state.lastLiveDataAt = Math.max(state.lastLiveDataAt, Number(payload.lastLiveDataAt || 0));
+    state.lastFallbackAt = String(payload.lastFallbackAt || state.lastFallbackAt || "");
+    state.lastFallbackError = String(payload.lastFallbackError || "");
+    syncTrustedClock(payload.generatedAt, "shared-tab");
+    scheduleRender();
+  }
+
+  function applySharedState(payload) {
+    if (!payload || tabBroker?.isLeader()) return;
+    applySharedTransport(payload);
+    state.settings = payload.settings || null;
+    state.rosters = new Map(Array.isArray(payload.rosters) ? payload.rosters : []);
+    state.factionNames = new Map(Array.isArray(payload.factionNames) ? payload.factionNames : []);
+    state.scores = new Map(Array.isArray(payload.scores) ? payload.scores : []);
+    state.retaliation = payload.retaliation || { attacks: [] };
+    state.loadouts = new Map(Array.isArray(payload.loadouts) ? payload.loadouts : []);
+    state.dibs = payload.dibs || { claims: [] };
+    state.rosterDataAt = new Map(Array.isArray(payload.rosterDataAt) ? payload.rosterDataAt : []);
+    state.fallbackRevision = String(payload.fallbackRevision || "");
+    syncTargetDraft();
+    scheduleRender();
+    setTimeout(() => {
+      maybeLoadEnemyLoadouts();
+      evaluateNotifications();
+    }, 0);
+  }
+
+  function handleTabBrokerData(type, payload) {
+    if (type === "transport") {
+      applySharedTransport(payload);
+      return;
+    }
+    if (type === "state") {
+      applySharedState(payload);
+      return;
+    }
+    if (type === "event" && TOPICS.includes(String(payload?.topic || ""))) {
+      applyEvent(String(payload.topic), payload.payload);
+      return;
+    }
+    if (type === "snapshot") {
+      applyFallbackSnapshot(payload);
+      applySharedTransport({ phase: "fallback", socketOpen: false, generatedAt: payload?.generatedAt });
+      return;
+    }
+    if (type === "snapshot-unchanged") {
+      markFallbackSnapshotUnchanged(payload);
+      applySharedTransport({ phase: "fallback", socketOpen: false, generatedAt: payload?.generatedAt });
+    }
+  }
+
+  function handleTabBrokerRequest(type, payload) {
+    if (!tabBroker?.isLeader()) throw new Error("This tab does not own the live connection");
+    if (type === "state") return sharedStatePayload();
+    if (type === "socket-action") {
+      const action = String(payload?.action || "");
+      if (!action) throw new Error("Live action is missing");
+      return requestDirectSocketAction(action, payload?.payload || {});
+    }
+    if (type === "roster-snapshot") {
+      requestDirectRosterSnapshot();
+      return { accepted: true };
+    }
+    throw new Error("Unsupported shared Warbuddy request");
+  }
+
   function clearFallbackTimer() {
     if (state.fallbackTimer) clearTimeout(state.fallbackTimer);
     state.fallbackTimer = 0;
@@ -2046,7 +2689,7 @@
 
   function scheduleFallbackPoll() {
     clearFallbackTimer();
-    if (!state.fallbackActive || !isForeground()) return;
+    if (!state.fallbackActive || !shouldRunOwnedTransport()) return;
     const view = sessionView();
     const delay = core.fallbackPollDelayMs({
       baseMs: FALLBACK_POLL_MS,
@@ -2063,14 +2706,14 @@
   }
 
   function startFallbackPolling() {
-    if (!state.session || !state.token || !isForeground()) return;
+    if (!state.session || !state.token || !shouldRunOwnedTransport()) return;
     if (!state.fallbackActive) state.fallbackFailureCount = 0;
     state.fallbackActive = true;
     pollFallbackSnapshot();
   }
 
   async function pollFallbackSnapshot() {
-    if (!state.fallbackActive || state.fallbackInFlight || !isForeground()) return;
+    if (!state.fallbackActive || state.fallbackInFlight || !shouldRunOwnedTransport()) return;
     const generation = state.fallbackGeneration;
     state.fallbackInFlight = true;
     clearFallbackTimer();
@@ -2090,14 +2733,19 @@
         headers: { Authorization: `Bearer ${state.token}` },
         label: "Warbuddy snapshot",
       });
-      if (generation !== state.fallbackGeneration || !state.fallbackActive || !isForeground()) return;
+      if (generation !== state.fallbackGeneration || !state.fallbackActive || !shouldRunOwnedTransport()) return;
       state.nowMs = trustedNowMs();
-      if (!markFallbackSnapshotUnchanged(snapshot)) applyFallbackSnapshot(snapshot);
+      const unchanged = markFallbackSnapshotUnchanged(snapshot);
+      if (!unchanged) applyFallbackSnapshot(snapshot);
       state.phase = "fallback";
       state.error = "";
       state.lastFallbackAt = new Date().toISOString();
       state.lastFallbackError = "";
       state.fallbackFailureCount = 0;
+      if (sharedBrokerEnabled() && tabBroker.isLeader()) {
+        tabBroker.broadcast(unchanged ? "snapshot-unchanged" : "snapshot", snapshot);
+      }
+      publishSharedTransport();
       void recordScriptCheckIn("compatible");
     } catch (error) {
       if (generation !== state.fallbackGeneration || !state.fallbackActive) return;
@@ -2113,6 +2761,7 @@
           : "";
       }
       scheduleRender();
+      publishSharedTransport();
     } finally {
       if (generation !== state.fallbackGeneration) return;
       state.fallbackInFlight = false;
@@ -2127,6 +2776,9 @@
     syncTrustedClock(message?.serverTime || message?.generatedAt, "websocket");
     if (message?.type === "event" && TOPICS.includes(String(message.topic || ""))) {
       applyEvent(String(message.topic), message.payload);
+      if (sharedBrokerEnabled() && tabBroker.isLeader()) {
+        tabBroker.broadcast("event", { topic: String(message.topic), payload: message.payload });
+      }
     }
     if (message?.type === "response" && message.id && state.socketRequests.has(String(message.id))) {
       const request = state.socketRequests.get(String(message.id));
@@ -2142,11 +2794,16 @@
     if (message?.type === "error") {
       state.error = message?.error?.error || message?.error?.message || "Live update failed";
       scheduleRender();
+      publishSharedTransport();
     }
   }
 
   function scheduleReconnect() {
-    if (!isForeground() || state.reconnectTimer || state.authTerminal) return;
+    if (
+      (!shouldRunOwnedTransport() && !localSessionNeedsRefresh())
+      || state.reconnectTimer
+      || state.authTerminal
+    ) return;
     const delay = state.fallbackActive
       ? FALLBACK_SOCKET_RETRY_MS
       : Math.min(20_000, 1_000 * 2 ** Math.min(state.reconnectAttempt, 4));
@@ -2158,12 +2815,24 @@
   }
 
   async function ensureConnected() {
-    if (!isForeground() || !getStoredKey() || state.authTerminal) return;
+    if (!getStoredKey() || state.authTerminal) return;
+    syncTabBrokerNonce();
+    const canAuthenticate = isForeground()
+      || (sharedBrokerEnabled() && tabBroker.isLeader() && tabBroker.shouldOwnTransport());
+    if (!canAuthenticate) return;
     if (state.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.socket.readyState)) return;
     try {
       const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
       if (!state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000) await authenticate();
-      if (!isForeground() || !getStoredKey() || !state.session || !state.token) return;
+      if (!getStoredKey() || !state.session || !state.token) return;
+      syncTabBrokerIdentity();
+      if (sharedBrokerEnabled() && !tabBroker.isLeader()) {
+        state.phase = state.sharedTransportPhase || "connecting";
+        if (tabBroker.hasLeader()) requestSharedState();
+        scheduleRender();
+        return;
+      }
+      if (!shouldRunOwnedTransport()) return;
       if (state.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.socket.readyState)) return;
       if (isTornPda) {
         if (!fallbackIsFresh()) state.phase = "connecting";
@@ -2202,6 +2871,7 @@
         setTimeout(maybeLoadEnemyLoadouts, 0);
         void recordScriptCheckIn("websocket");
         scheduleRender();
+        publishSharedTransport();
       });
       socket.addEventListener("message", (event) => {
         if (socket !== state.socket) return;
@@ -2229,9 +2899,10 @@
           reason: String(event.reason || ""),
           at: new Date().toISOString(),
         };
-        if (!isForeground()) {
+        if (!shouldRunOwnedTransport()) {
           state.phase = "paused";
           scheduleRender();
+          publishSharedTransport();
           return;
         }
         const hasFreshFallback = fallbackIsFresh();
@@ -2249,6 +2920,7 @@
         state.phase = hasFreshFallback ? "fallback" : "connecting";
         if (state.token && state.session) startFallbackPolling();
         scheduleRender();
+        publishSharedTransport();
         scheduleReconnect();
       });
     } catch (error) {
@@ -2263,6 +2935,7 @@
         if (state.token && state.session) startFallbackPolling();
       }
       scheduleRender();
+      publishSharedTransport();
       if (!state.authTerminal) scheduleReconnect();
     }
   }
@@ -2280,6 +2953,18 @@
     if (state.ticker) return;
     state.ticker = setInterval(() => {
       state.nowMs = trustedNowMs();
+      if (syncTabBrokerNonce()) {
+        syncTabBrokerIdentity();
+        void ensureConnected();
+      }
+      if (
+        sharedBrokerEnabled()
+        && !tabBroker.isLeader()
+        && tabBroker.hasLeader()
+        && localSessionNeedsRefresh()
+        && !state.authPromise
+        && !state.reconnectTimer
+      ) void ensureConnected();
       if (state.phase === "connected") void recordScriptCheckIn("websocket");
       if (state.phase === "fallback") void recordScriptCheckIn("compatible");
       const renderInterval = hasTimeSensitiveState() ? TICKER_INTERVAL_MS : IDLE_RENDER_INTERVAL_MS;
@@ -2294,21 +2979,39 @@
     state.ticker = 0;
   }
 
+  function pauseLocalConnectionDemand() {
+    if (sharedBrokerEnabled()) {
+      tabBroker.setActive(false);
+      if (tabBroker.shouldOwnTransport()) return true;
+    }
+    closeOwnedTransport("Paused");
+    return false;
+  }
+
   function syncForegroundState() {
+    syncTabBrokerNonce();
     if (!state.active) {
       stopTicker();
-      closeSocket();
+      const retainedForPeer = pauseLocalConnectionDemand();
+      if (!retainedForPeer) {
+        state.phase = getStoredKey() ? "paused" : "idle";
+        publishSharedTransport();
+      }
       return;
     }
     if (isForeground()) {
+      syncTabBrokerIdentity();
       if (getStoredKey()) startTicker();
       else stopTicker();
       ensureConnected();
       return;
     }
     stopTicker();
-    closeSocket();
-    state.phase = getStoredKey() ? "paused" : "idle";
+    const retainedForPeer = pauseLocalConnectionDemand();
+    if (!retainedForPeer) {
+      state.phase = getStoredKey() ? "paused" : "idle";
+      publishSharedTransport();
+    }
     cancelScheduledRender();
     scheduleRender();
   }
@@ -3523,9 +4226,10 @@
       state.authTerminal = false;
       state.keyEditorError = "";
       state.error = "";
-      closeSocket();
+      closeOwnedTransport("Manual reconnect");
       prepareSameKeyReconnect();
       state.phase = "connecting";
+      publishSharedTransport();
       setTimeout(ensureConnected, 50);
       scheduleRender();
     });
@@ -3567,7 +4271,8 @@
     state.keySaving = false;
     state.authTerminal = false;
     stopTicker();
-    closeSocket();
+    releaseTabBrokerIdentity();
+    closeOwnedTransport("API key removed");
     state.session = null;
     state.token = "";
     state.lastCheckInAt = 0;
@@ -3595,8 +4300,9 @@
     try {
       const session = await requestCompanionSession(key);
       invalidateAuthentication();
+      releaseTabBrokerIdentity();
       storage.set(KEY_STORAGE, key);
-      closeSocket();
+      closeOwnedTransport("API key changed");
       clearLiveFactionData();
       applyCompanionSession(session);
       state.keyDraft = "";
@@ -3680,8 +4386,11 @@
     if (!active) {
       if (state.active || document.getElementById(PANEL_ID)) {
         stopTicker();
-        closeSocket();
-        state.phase = getStoredKey() ? "paused" : "idle";
+        const retainedForPeer = pauseLocalConnectionDemand();
+        if (!retainedForPeer) {
+          state.phase = getStoredKey() ? "paused" : "idle";
+          publishSharedTransport();
+        }
         document.getElementById(PANEL_ID)?.remove();
         removeInlineMemberTools();
         removeIntegratedMount(false);
@@ -3725,6 +4434,20 @@
   registerMenuCommand("Warbuddy: diagnostics", () => {
     const routeMatches = core.isWarbuddyPageUrl(window.location.href);
     const panel = document.getElementById(PANEL_ID);
+    const brokerDebug = tabBroker?.diagnostics?.() || { enabled: false, role: "standalone", leaderId: "", peerCount: 0 };
+    const brokerLeader = !brokerDebug.enabled
+      ? "n/a"
+      : brokerDebug.leaderId
+        ? brokerDebug.leaderId === tabBroker?.tabId ? "this tab" : "peer tab"
+        : "none";
+    const socketDebug = state.socket
+      ? `${state.socket.readyState} (direct owner)`
+      : state.sharedSocketOpen
+        ? "open (shared from leader)"
+        : "none";
+    const transportDebug = state.phase === "fallback"
+      ? brokerDebug.enabled && brokerDebug.role === "follower" ? "shared compatible fallback" : "compatible HTTP fallback owner"
+      : brokerDebug.enabled && brokerDebug.role === "follower" ? "shared WebSocket" : "direct WebSocket owner";
     window.alert([
       `Warbuddy v${SCRIPT_VERSION}`,
       `Route matched: ${routeMatches ? "yes" : "no"}`,
@@ -3736,8 +4459,9 @@
       `Phase: ${state.phase}`,
       `Page visibility: ${document.visibilityState}`,
       `Browser online: ${typeof navigator === "undefined" || navigator.onLine !== false ? "yes" : "no"}`,
-      `WebSocket state: ${state.socket?.readyState ?? "none"}`,
-      `Transport: ${state.phase === "fallback" ? "compatible HTTP fallback" : "WebSocket"}`,
+      `Tab broker: ${brokerDebug.enabled ? `${brokerDebug.role}; leader ${brokerLeader}; peers ${Number(brokerDebug.peerCount || 0)}` : "unavailable; standalone"}`,
+      `WebSocket state: ${socketDebug}`,
+      `Transport: ${transportDebug}`,
       `Connect watchdog: ${state.socketConnectTimer ? "armed" : "idle"}`,
       `Last socket error: ${state.lastSocketErrorAt || "none"}`,
       `Last close: ${state.lastSocketClose ? `${state.lastSocketClose.code}${state.lastSocketClose.reason ? ` (${state.lastSocketClose.reason})` : ""} at ${state.lastSocketClose.at}` : "none"}`,
@@ -3774,6 +4498,11 @@
     render();
     syncForegroundState();
   });
+
+  initializeTabBroker();
+  setTimeout(() => {
+    if (syncTabBrokerNonce(true)) syncForegroundState();
+  }, 150);
 
   document.addEventListener("visibilitychange", syncVisibilityState);
   document.addEventListener("pointerdown", (event) => {
@@ -3819,7 +4548,9 @@
     if (state.routeTimer) clearInterval(state.routeTimer);
     state.routeTimer = 0;
     stopTicker();
-    closeSocket();
+    tabBroker?.close();
+    tabBroker = null;
+    closeOwnedTransport("Tab closed");
     cancelScheduledRender();
     state.active = false;
     state.pageObserver?.disconnect();

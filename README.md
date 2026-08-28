@@ -1,5 +1,13 @@
 # Warbuddy
 
+## 0.1.46
+
+- Shares one live WebSocket or compatible fallback across Warbuddy tabs for the same verified player and faction.
+- Delivers live events and follower actions directly between tabs without putting a heartbeat or polling delay in the normal update path.
+- Keeps the elected owner connected across ordinary tab switches, then transfers ownership automatically if that tab closes or stops responding.
+- Uses a private per-install channel and never sends the Torn API key, companion session token, or authorization header between tabs.
+- Retains the previous per-tab connection behavior when BroadcastChannel is unavailable.
+
 ## 0.1.45
 
 - Removes the redundant Dibs hand beside Torn roster names so wide player banners cannot spill controls into the Level column.
@@ -82,7 +90,9 @@ Warbuddy displays information and links only. It never attacks, clicks, submits 
 - The key is used to identify the player and faction, then exchanged for a six-hour, faction-scoped companion session.
 - The key is not saved to the backend during that exchange.
 - New and replacement keys are verified before they replace the locally stored working key.
-- Warbuddy connects only while its panel is expanded on a visible Torn faction tab and the device is online.
+- Warbuddy keeps live transport active only while at least one expanded, visible Warbuddy tab needs it and the device is online.
+- Tabs for the same verified player and faction elect one connection owner and receive its events immediately through a private per-install browser channel.
+- The Torn API key, companion session token, and authorization header never enter that cross-tab channel.
 - Its backend session can read War Tracker settings, rosters, score, retaliation, and shared Dibs for the verified faction. It can save only that player's watched-target list and Dibs actions.
 - Other players' watched-target lists are never returned to the script.
 - WebSocket updates are preferred. If the browser rejects a third-party socket inside Torn, Warbuddy automatically uses a cached scoped snapshot without making extra Torn API calls.
@@ -103,12 +113,24 @@ The build writes the canonical `warbuddy.user.js` and update-only `warbuddy.meta
 Source files:
 
 - `src/core.cjs` contains the deterministic queue and live-state logic.
+- `src/tab-broker.cjs` contains credential-free cross-tab ownership, event delivery, action relay, and failover logic.
 - `src/userscript.js` contains Torn UI, storage, authentication, and WebSocket integration.
 - `userscript.header.txt` contains the userscript metadata.
 
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.46 - 28 August 2026
+
+- Elects one Warbuddy tab to own the WebSocket, or compatible fallback where WebSockets are unsupported, for each verified player/faction browser session.
+- Sends socket events and follower actions directly over BroadcastChannel; the liveness heartbeat is not part of normal event delivery.
+- Retains a hidden owner while another visible tab advertises demand, avoiding reconnects during ordinary tab switches.
+- Responds to presence and explicit liveness probes from the message handler, preventing hidden-tab timer throttling from causing false failover.
+- Transfers ownership immediately on clean tab closure and deterministically converges short-lived split leadership on the lower lease ID.
+- Uses a cryptographically random, userscript-storage channel nonce and refuses messages or responses containing API-key, token, or authorization fields.
+- Falls back unchanged to one connection per tab when BroadcastChannel is unavailable.
+- Adds no Torn API call, backend endpoint, or database migration.
 
 ### 0.1.45 - 27 August 2026
 

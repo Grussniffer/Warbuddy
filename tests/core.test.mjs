@@ -765,13 +765,25 @@ describe("Warbuddy panel state", () => {
       "function scheduleReconnect",
       "function startTicker"
     ));
+    const sessionRefreshSource = compactSource(sourceSection(
+      source,
+      "const localSessionNeedsRefresh",
+      "const directSocketIsOpen"
+    ));
+    const tickerSource = compactSource(sourceSection(source, "function startTicker", "function stopTicker"));
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
 
     assert.match(authenticateSource, /state\.authTerminal = isTerminalAuthenticationError\(error\)/);
     assert.match(authenticateSource, /if \(state\.authTerminal\) state\.keyEditorOpen = true/);
-    assert.match(reconnectSource, /if \(!isForeground\(\) \|\| state\.reconnectTimer \|\| state\.authTerminal\) return/);
-    assert.match(reconnectSource, /if \(!isForeground\(\) \|\| !getStoredKey\(\) \|\| state\.authTerminal\) return/);
+    assert.match(reconnectSource, /!shouldRunOwnedTransport\(\) && !localSessionNeedsRefresh\(\)/);
+    assert.match(reconnectSource, /if \(!getStoredKey\(\) \|\| state\.authTerminal\) return/);
+    assert.match(reconnectSource, /const canAuthenticate = isForeground\(\)/);
     assert.match(reconnectSource, /if \(!state\.authTerminal\) scheduleReconnect\(\)/);
+    assert.match(sessionRefreshSource, /if \(!isForeground\(\)\) return false/);
+    assert.match(sessionRefreshSource, /!state\.session \|\| !state\.token/);
+    assert.match(sessionRefreshSource, /expiresAt <= Date\.now\(\) \+ 30_000/);
+    assert.match(tickerSource, /!tabBroker\.isLeader\(\).*tabBroker\.hasLeader\(\).*localSessionNeedsRefresh\(\)/);
+    assert.doesNotMatch(tickerSource, /tabBroker\.(?:broadcast|request)/);
     assert.match(renderSource, /const showKeyEditor = !savedKey \|\| state\.keyEditorOpen \|\| state\.authTerminal/);
     assert.match(renderSource, /savedKey \? "Replacement Torn API key" : "Torn API key"/);
     assert.match(renderSource, /savedKey \? "Replace" : "Connect"/);
@@ -820,6 +832,7 @@ describe("Warbuddy panel state", () => {
 
   it("records quiet, scoped version check-ins without adding Torn calls", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const checkInSource = sourceSection(source, "function recordScriptCheckIn", "function clearSocketConnectTimer");
 
     assert.ok(source.includes("const SCRIPT_CHECK_IN_INTERVAL_MS = 10 * 60 * 1000"));
     assert.ok(source.includes('data: JSON.stringify({ tornApiKey: key, scriptVersion: SCRIPT_VERSION })'));
@@ -828,6 +841,9 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('data: JSON.stringify({ scriptVersion: SCRIPT_VERSION, transport })'));
     assert.ok(source.includes('if (state.phase === "connected") void recordScriptCheckIn("websocket")'));
     assert.ok(source.includes('if (state.phase === "fallback") void recordScriptCheckIn("compatible")'));
+    assert.doesNotMatch(checkInSource, /sharedBrokerEnabled|tabBroker\.isLeader/);
+    assert.ok(!source.includes("ownsLiveTransport"));
+    assert.ok(!source.includes("sharedTransportLeaderId"));
     assert.ok(source.includes("authEpoch !== state.authEpoch"));
     assert.ok(source.includes("state.checkInPromise === checkInPromise"));
     assert.doesNotMatch(source, /api\.torn\.com[^\n]*check-in/i);
