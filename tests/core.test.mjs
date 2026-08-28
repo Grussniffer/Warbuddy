@@ -572,24 +572,102 @@ describe("Warbuddy live state", () => {
     );
   });
 
-  it("matches backend Dibs eligibility for hospital and Torn targets", () => {
+  it("requires fresh cached rosters and known normalized same-country Dibs locations", () => {
     const nowMs = 2_000_000_000_000;
-    assert.equal(core.dibsEligibility({
-      status: { userStatus: "Hospital", untill: nowMs + 5 * 60_000 },
-      location: { current: "Torn" },
-    }, nowMs).eligible, true);
-    assert.equal(core.dibsEligibility({
-      status: { userStatus: "Hospital", untill: nowMs + 5 * 60_000 + 1 },
-      location: { current: "Torn" },
-    }, nowMs).eligible, false);
-    assert.equal(core.dibsEligibility({
+    const claimant = {
+      member_id: 1,
       status: { userStatus: "Okay" },
-      location: { current: "Torn" },
-    }, nowMs).eligible, true);
-    assert.equal(core.dibsEligibility({
+      location: { current: "  Cayman   Islands " },
+    };
+    const target = {
+      member_id: 2,
+      status: { userStatus: "Abroad" },
+      location: { current: "cayman islands" },
+    };
+    const eligible = core.dibsClaimEligibility({
+      claimant,
+      target,
+      claimantRosterFresh: true,
+      targetRosterFresh: true,
+    }, nowMs);
+
+    assert.equal(eligible.eligible, true);
+    assert.equal(eligible.state, "available");
+    assert.equal(eligible.claimantLocation, "Cayman Islands");
+    assert.equal(eligible.targetLocation, "cayman islands");
+    assert.match(eligible.reason, /Same location/);
+
+    assert.deepEqual(core.dibsClaimEligibility({
+      claimant,
+      target,
+      claimantRosterFresh: false,
+      targetRosterFresh: true,
+    }, nowMs), {
+      eligible: false,
+      state: "claimant_roster_stale",
+      reason: "Waiting for your faction location data.",
+    });
+    assert.equal(core.dibsClaimEligibility({
+      claimant,
+      target,
+      claimantRosterFresh: true,
+      targetRosterFresh: false,
+    }, nowMs).state, "target_roster_stale");
+  });
+
+  it("rejects traveling, unknown, and different-location Dibs without failing open on blanks", () => {
+    const nowMs = 2_000_000_000_000;
+    const settled = (current, status = "Okay") => ({ status: { userStatus: status }, location: { current } });
+    const check = (claimant, target) => core.dibsClaimEligibility({
+      claimant,
+      target,
+      claimantRosterFresh: true,
+      targetRosterFresh: true,
+    }, nowMs);
+
+    assert.equal(check(settled("Torn"), settled("Mexico")).state, "location_mismatch");
+    assert.match(check(settled("Torn"), settled("Mexico")).reason, /You are in Torn; target is in Mexico/);
+    assert.equal(check(settled(""), settled("Torn")).state, "claimant_location_unknown");
+    assert.equal(check(settled("Torn"), settled("")).state, "target_location_unknown");
+    assert.equal(check(settled("Torn", "Traveling"), settled("Torn")).state, "claimant_traveling");
+    assert.equal(check(settled("Torn"), settled("Torn", "Traveling")).state, "target_traveling");
+    assert.equal(check(settled("Torn", "Returning"), settled("Torn")).state, "claimant_traveling");
+    assert.equal(check(settled("Torn"), {
       status: { userStatus: "Okay" },
-      location: { current: "Mexico" },
-    }, nowMs).eligible, false);
+      location: { current: "Torn", destination: "Mexico" },
+    }).state, "target_traveling");
+    assert.equal(check(settled("Torn"), {
+      status: { userStatus: "Okay" },
+      location: { current: "Torn", destination: "unknown" },
+    }).state, "target_traveling");
+    for (const unknown of ["unknown", " none ", "N/A", "-"]) {
+      assert.equal(check(settled("Torn"), settled(unknown)).state, "target_location_unknown");
+    }
+    assert.equal(check(settled("Torn"), settled("Torn", "Abroad")).state, "target_location_unknown");
+    assert.equal(check(settled("UAE"), settled("United Arab Emirates")).state, "location_mismatch");
+    assert.equal(check(settled("Mexico"), settled("\uFF2D\uFF45\uFF58\uFF49\uFF43\uFF4F")).eligible, true);
+    assert.equal(core.dibsEligibility(settled(""), nowMs).eligible, false);
+    assert.equal(core.dibsEligibility(settled(""), nowMs).state, "target_location_unknown");
+  });
+
+  it("applies the five-minute hospital window after same-location validation", () => {
+    const nowMs = 2_000_000_000_000;
+    const claimant = { status: { userStatus: "Okay" }, location: { current: "Mexico" } };
+    const hospitalTarget = (remainingMs) => ({
+      status: { userStatus: "Hospital", untill: nowMs + remainingMs },
+      location: { current: "mexico" },
+    });
+    const check = (remainingMs) => core.dibsClaimEligibility({
+      claimant,
+      target: hospitalTarget(remainingMs),
+      claimantRosterFresh: true,
+      targetRosterFresh: true,
+    }, nowMs);
+
+    assert.equal(check(5 * 60_000).eligible, true);
+    assert.equal(check(5 * 60_000).state, "hospitalized");
+    assert.equal(check(5 * 60_000 + 1).eligible, false);
+    assert.equal(check(5 * 60_000 + 1).state, "hospital_too_early");
   });
 
   it("shows only an active Dibs claim for the requested target", () => {
@@ -885,7 +963,7 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('"war_dibs"'));
     assert.ok(source.includes('/war-companion/dibs'));
     assert.ok(source.includes('JSON.stringify({ action, targetMemberId: memberId })'));
-    assert.ok(source.includes('data-dibs-action="claim"') || source.includes('const action = claim ? "inspect" : "claim"'));
+    assert.ok(source.includes('data-dibs-action="claim"') || source.includes('const action = claim || !canClaim ? "inspect" : "claim"'));
     assert.ok(source.includes('data-dibs-action="release"'));
     assert.ok(source.includes("wc-action-section .wc-dibs-tip"));
     assert.match(source, /\.wc-dibs-tip\s*\{[^}]*position:\s*fixed/);
@@ -894,6 +972,31 @@ describe("Warbuddy panel state", () => {
     assert.match(tipPositionSource, /tip\.style\.top =/);
     assert.match(source, /\.wc-dibs\s*\{[^}]*width:\s*16px;\s*height:\s*16px/);
     assert.doesNotMatch(source, /api\.torn\.com[^\n]*dibs/i);
+  });
+
+  it("uses cached roster locations for immediate Dibs feedback and keeps the server authoritative", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const contextSource = compactSource(sourceSection(source, "function dibsClaimContext", "function syncIntegratedMemberTools"));
+    const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
+    const markupSource = compactSource(sourceSection(source, "function dibsMarkup", "function attackLinkMarkup"));
+    const updateSource = compactSource(sourceSection(source, "async function updateDibs", "function actionQueueMarkup"));
+
+    assert.match(contextSource, /view\?\.ownRoster/);
+    assert.match(contextSource, /core\.dibsClaimEligibility/);
+    assert.match(contextSource, /claimantRosterFresh: rosterIsFresh\(view\?\.ownFactionId\)/);
+    assert.match(contextSource, /targetRosterFresh: rosterIsFresh\(view\?\.enemyFactionId\)/);
+    assert.doesNotMatch(contextSource, /requestJson|authenticate|setTimeout|setInterval/);
+    assert.doesNotMatch(markupSource, /if \(!claim && !eligibility\.eligible\) return/);
+    assert.match(markupSource, /const action = claim \|\| !canClaim \? "inspect" : "claim"/);
+    assert.doesNotMatch(markupSource, /aria-disabled/);
+    assert.match(markupSource, /aria-expanded="\$\{open \? "true" : "false"\}"/);
+    assert.match(markupSource, /aria-label="\$\{escapeHtml\(busyLabel\)\}"/);
+    assert.match(markupSource, /title="\$\{escapeHtml\(label\)\}"/);
+    assert.match(markupSource, /Dibs unavailable - \$\{unavailableReason\}/);
+    assert.match(inlineSource, /const claimWarning = claim && !claimEligibility\?\.eligible/);
+    assert.match(updateSource, /const eligibility = dibsClaimContext\(target, view\)/);
+    assert.match(updateSource, /showDibsError\(eligibility\.reason, memberId\)/);
+    assert.match(updateSource, /requestJson\(\{/);
   });
 
   it("removes a released Dibs target from personal watch without discarding other draft edits", async () => {
@@ -1257,10 +1360,10 @@ describe("Warbuddy userscript source contracts", () => {
 
     assert.match(sessionViewSource, /const genericSuggestionsEnabled = rosterIsFresh\(ownFactionId\) && rosterIsFresh\(enemyFactionId\)/);
     assert.match(sessionViewSource, /\.filter\(\(item\) => genericSuggestionsEnabled \|\| !String\(item\.key \|\| ""\)\.startsWith\("online-"\)\)/);
-    assert.match(dibsMarkupSource, /const canMutate = rosterIsFresh\(view\.enemyFactionId\) && !state\.authTerminal && !state\.keySaving/);
+    assert.match(dibsMarkupSource, /const canMutate = isOnline\(\) && rosterIsFresh\(view\.ownFactionId\) && rosterIsFresh\(view\.enemyFactionId\) && !state\.authTerminal && !state\.keySaving/);
     assert.match(saveTargetsSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
     assert.match(quickWatchSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
-    assert.match(updateDibsSource, /action === "claim" && !currentEnemyRosterIsFresh\(\)/);
+    assert.match(updateDibsSource, /if \(action === "claim"\).*const eligibility = dibsClaimContext\(target, view\)/);
     assert.match(source, /state\.rosterDataAt\.delete\(factionId\)/);
     assert.match(source, /state\.rosterDataAt\.set\(factionId, Date\.now\(\)\)/);
     assert.match(renderSource, /data-action="save-targets"[^>]*!isOnline\(\)[^>]*state\.authTerminal[^>]*state\.keySaving/);
@@ -1282,7 +1385,8 @@ describe("Warbuddy userscript source contracts", () => {
     ));
 
     assert.match(dibsMarkupSource, /const anyBusy = state\.dibsBusyTargetId > 0/);
-    assert.match(dibsMarkupSource, /const disabled = anyBusy \|\| \(!claim && !canMutate\)/);
+    assert.match(dibsMarkupSource, /const disabled = anyBusy/);
+    assert.match(dibsMarkupSource, /const action = claim \|\| !canClaim \? "inspect" : "claim"/);
     assert.match(dibsMarkupSource, /!canRelease \|\| anyBusy \? " disabled" : ""/);
     assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
     assert.match(updateDibsSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);

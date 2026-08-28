@@ -447,24 +447,172 @@
     return undefined;
   };
 
+  const normalizedDibsLocationLabel = (value) =>
+    String(value || "").normalize("NFKC").trim().replace(/\s+/g, " ");
+
+  const normalizedDibsCountry = (value) =>
+    normalizedDibsLocationLabel(value).toLocaleLowerCase("en-US");
+
+  const dibsSettledLocation = (member) => {
+    const statusValue = member?.status && typeof member.status === "object" ? member.status : undefined;
+    const status = String(
+      statusValue?.userStatus
+      || statusValue?.user_status
+      || statusValue?.state
+      || ""
+    ).trim().toLowerCase();
+    if (!status) return { state: "unknown", cause: "status" };
+
+    const location = member?.location && typeof member.location === "object" ? member.location : undefined;
+    const destination = normalizedDibsCountry(location?.destination);
+    if (status.includes("travel") || status.includes("return") || destination) {
+      return { state: "traveling" };
+    }
+
+    const country = normalizedDibsLocationLabel(location?.current);
+    const normalizedCountry = normalizedDibsCountry(country);
+    if (!country || !normalizedCountry || ["unknown", "none", "n/a", "-"].includes(normalizedCountry)) {
+      return { state: "unknown", cause: "location" };
+    }
+    if (status.includes("abroad") && normalizedCountry === "torn") {
+      return { state: "unknown", cause: "location" };
+    }
+    return { state: "settled", country, normalizedCountry, status };
+  };
+
   const dibsEligibility = (member, nowMs = Date.now()) => {
-    const status = memberStatus(member);
-    if (!status) return { eligible: false, state: "unknown" };
-    if (status.includes("hospital")) {
-      const hospitalUntil = toTimestampMs(member?.status?.untill || member?.status?.until);
+    const targetLocation = dibsSettledLocation(member);
+    if (targetLocation.state === "traveling") {
+      return { eligible: false, state: "target_traveling", reason: "Target is traveling." };
+    }
+    if (targetLocation.state === "unknown") {
+      return targetLocation.cause === "status"
+        ? { eligible: false, state: "target_status_unknown", reason: "Target status is unknown." }
+        : { eligible: false, state: "target_location_unknown", reason: "Target location is unknown." };
+    }
+    if (targetLocation.status.includes("hospital")) {
+      const hospitalUntil = toTimestampMs(member?.status?.untill ?? member?.status?.until);
+      const remainingMs = hospitalUntil - nowMs;
+      if (hospitalUntil > nowMs && remainingMs <= DIBS_HOSPITAL_WINDOW_MS) {
+        return {
+          eligible: true,
+          state: "hospitalized",
+          reason: `Target leaves hospital in ${duration(remainingMs)}.`,
+          hospitalUntil,
+          targetLocation: targetLocation.country,
+        };
+      }
       return {
-        eligible: hospitalUntil > nowMs && hospitalUntil - nowMs <= DIBS_HOSPITAL_WINDOW_MS,
-        state: "hospitalized",
+        eligible: false,
+        state: hospitalUntil > nowMs ? "hospital_too_early" : "target_unavailable",
+        reason: hospitalUntil > nowMs
+          ? `Dibs opens five minutes before hospital release (${duration(remainingMs)} remaining).`
+          : "Target hospital status is no longer current.",
         hospitalUntil,
+        targetLocation: targetLocation.country,
       };
     }
-    if (status === "okay" || status.startsWith("okay ") || status.startsWith("okay -")) {
-      const current = memberLocation(member);
-      const destination = memberDestination(member);
-      const available = (!current || current.includes("torn")) && (!destination || destination.includes("torn"));
-      return { eligible: available, state: available ? "available" : "unavailable" };
+    const isOkay = targetLocation.status === "okay"
+      || targetLocation.status.startsWith("okay ")
+      || targetLocation.status.startsWith("okay -");
+    const isAbroad = targetLocation.status === "abroad" || targetLocation.status.startsWith("abroad ");
+    if (isOkay || isAbroad) {
+      return {
+        eligible: true,
+        state: "available",
+        reason: `Target is settled in ${targetLocation.country}.`,
+        targetLocation: targetLocation.country,
+      };
     }
-    return { eligible: false, state: "unavailable" };
+    return {
+      eligible: false,
+      state: "target_unavailable",
+      reason: "Target is not currently attackable.",
+      targetLocation: targetLocation.country,
+    };
+  };
+
+  const dibsClaimEligibility = ({
+    claimant,
+    target,
+    claimantName = "You",
+    claimantRosterFresh = false,
+    targetRosterFresh = false,
+  } = {}, nowMs = Date.now()) => {
+    if (!claimantRosterFresh || !targetRosterFresh) {
+      const state = !claimantRosterFresh && !targetRosterFresh
+        ? "rosters_stale"
+        : !claimantRosterFresh ? "claimant_roster_stale" : "target_roster_stale";
+      const reason = state === "rosters_stale"
+        ? "Waiting for fresh faction location data."
+        : state === "claimant_roster_stale"
+          ? "Waiting for your faction location data."
+          : "Waiting for fresh enemy location data.";
+      return { eligible: false, state, reason };
+    }
+
+    const name = normalizedDibsLocationLabel(claimantName) || "You";
+    const isViewer = name.toLocaleLowerCase("en-US") === "you";
+    const subject = isViewer ? "You are" : `${name} is`;
+    const possessive = isViewer ? "Your" : `${name}'s`;
+    const claimantLocation = dibsSettledLocation(claimant);
+    if (claimantLocation.state === "traveling") {
+      return { eligible: false, state: "claimant_traveling", reason: `${subject} traveling.` };
+    }
+    if (claimantLocation.state === "unknown") {
+      return claimantLocation.cause === "status"
+        ? { eligible: false, state: "claimant_status_unknown", reason: `${possessive} status is unknown.` }
+        : { eligible: false, state: "claimant_location_unknown", reason: `${possessive} location is unknown.` };
+    }
+
+    const targetLocation = dibsSettledLocation(target);
+    if (targetLocation.state === "traveling") {
+      return {
+        eligible: false,
+        state: "target_traveling",
+        reason: "Target is traveling.",
+        claimantLocation: claimantLocation.country,
+      };
+    }
+    if (targetLocation.state === "unknown") {
+      return targetLocation.cause === "status"
+        ? {
+          eligible: false,
+          state: "target_status_unknown",
+          reason: "Target status is unknown.",
+          claimantLocation: claimantLocation.country,
+        }
+        : {
+          eligible: false,
+          state: "target_location_unknown",
+          reason: "Target location is unknown.",
+          claimantLocation: claimantLocation.country,
+        };
+    }
+    if (claimantLocation.normalizedCountry !== targetLocation.normalizedCountry) {
+      return {
+        eligible: false,
+        state: "location_mismatch",
+        reason: `Locations differ: ${subject} in ${claimantLocation.country}; target is in ${targetLocation.country}.`,
+        claimantLocation: claimantLocation.country,
+        targetLocation: targetLocation.country,
+      };
+    }
+
+    const targetReadiness = dibsEligibility(target, nowMs);
+    if (!targetReadiness.eligible) {
+      return {
+        ...targetReadiness,
+        claimantLocation: claimantLocation.country,
+        targetLocation: targetLocation.country,
+      };
+    }
+    return {
+      ...targetReadiness,
+      reason: `Same location: ${targetLocation.country}.`,
+      claimantLocation: claimantLocation.country,
+      targetLocation: targetLocation.country,
+    };
   };
 
   const activeDibsClaim = (payload, targetMemberId, nowMs = Date.now()) =>
@@ -709,6 +857,7 @@
     chainPresentation,
     countdown,
     dibsAttackPresentation,
+    dibsClaimEligibility,
     dibsEligibility,
     dibsFeatureEnabled,
     duration,

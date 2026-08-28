@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.47
+
+- Enables Dibs only when fresh cached rosters place the claimant and target in the same settled country, including the same foreign country.
+- Explains stale, traveling, unknown-location, and different-location states without hiding existing claims.
+- Uses the already-live roster data with no added request or delay; the backend remains authoritative when a claim is submitted.
+- Treats the client's received-update freshness as an optimistic UI guard; backend successful-sample freshness remains authoritative.
+
 ## 0.1.46
 
 - Shares one live WebSocket or compatible fallback across Warbuddy tabs for the same verified player and faction.
@@ -77,7 +84,7 @@ The install URL ends in `.user.js` and includes update metadata, so supported us
 - Online enemy targets when they are relevant to the action queue.
 - Personal watched enemies within one minute of landing or leaving hospital, and while attackable in Torn.
 - A searchable, filterable personal-target picker with drafts that stay intact until Save or Cancel.
-- A compact shared Dibs marker for attackable enemies and enemies leaving hospital within five minutes.
+- A compact shared Dibs marker for same-location attackable enemies and enemies leaving hospital within five minutes.
 - Active retaliation windows with explicit links to Torn.
 - A current-target card on Torn attack pages, with Watch/Unwatch and Dibs beside the target.
 - A stable empty state when there are no immediate actions.
@@ -120,6 +127,15 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.47 - 29 August 2026
+
+- Requires fresh cached own and enemy rosters before enabling a Dibs claim.
+- Normalizes and compares the claimant and target's current settled countries, permits literal same-country foreign claims, and fails closed for blank or unknown locations.
+- Rejects traveling, different-location, and unavailable targets in the UI with a concise inspectable explanation.
+- Keeps active claims visible and releasable while adding a location warning when cached roster state no longer matches.
+- Rechecks the same cached eligibility immediately before the existing backend mutation, without adding Torn calls, backend requests, timers, or polling.
+- Keeps unavailable explanation controls keyboard- and assistive-technology-accessible, and treats client connection freshness as optimistic while backend successful-sample freshness remains authoritative.
 
 ### 0.1.46 - 28 August 2026
 

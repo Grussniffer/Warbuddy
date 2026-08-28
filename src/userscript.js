@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.46";
+  const SCRIPT_VERSION = "0.1.47";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -330,6 +330,7 @@
     #${PANEL_ID} .wc-dibs:hover, #${PANEL_ID} .wc-dibs:focus-visible { background:#27272a; color:#e4e4e7; outline:1px solid #71717a; }
     #${PANEL_ID} .wc-dibs.mine { color:#10b981; }
     #${PANEL_ID} .wc-dibs.taken { color:#f59e0b; }
+    #${PANEL_ID} .wc-dibs.unavailable { opacity:.55; color:#71717a; cursor:help; }
     #${PANEL_ID} .wc-dibs:disabled { opacity:.45; cursor:wait; }
     #${PANEL_ID} .wc-dibs-tip { position:fixed; z-index:2147483647; display:none; width:max-content; max-width:min(210px,calc(100vw - 28px)); border:1px solid #3f3f46; border-radius:4px; background:#09090b; color:#e4e4e7; padding:5px 6px; box-shadow:0 6px 18px rgba(0,0,0,.45); font-size:10px; white-space:normal; }
     #${PANEL_ID} .wc-action-section { overflow:visible; }
@@ -2044,6 +2045,20 @@
     if (action === "watch") void toggleWatchedTarget(memberId);
   }
 
+  function dibsClaimContext(member, view, claim) {
+    const claimantPlayerId = claim?.claimedByPlayerId || state.session?.playerId;
+    const claimant = (view?.ownRoster || []).find((candidate) => (
+      Number(candidate?.member_id || 0) === Number(claimantPlayerId || 0)
+    ));
+    return core.dibsClaimEligibility({
+      claimant,
+      target: member,
+      claimantName: claim ? String(claim.claimedByPlayerName || claim.claimedByPlayerId || "Claim holder") : "You",
+      claimantRosterFresh: rosterIsFresh(view?.ownFactionId),
+      targetRosterFresh: rosterIsFresh(view?.enemyFactionId),
+    }, state.nowMs);
+  }
+
   function syncIntegratedMemberTools(view = sessionView()) {
     const canDecorate = state.active
       && state.displayMode === "integrated"
@@ -2097,8 +2112,10 @@
         : undefined;
       const isMine = !!claim && String(claim.claimedByPlayerId || "") === String(state.session?.playerId || "");
       const dibsRemaining = claim ? core.duration(core.toTimestampMs(claim.expiresAt) - state.nowMs) : "";
+      const claimEligibility = claim ? dibsClaimContext(member, view, claim) : undefined;
+      const claimWarning = claim && !claimEligibility?.eligible ? ` - ${claimEligibility.reason}` : "";
       const dibsLabel = claim
-        ? `${isMine ? "Your Dibs" : `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId}`} - ${dibsRemaining} left`
+        ? `${isMine ? "Your Dibs" : `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId}`} - ${dibsRemaining} left${claimWarning}`
         : "";
       const retaliation = retaliations.get(memberId);
       const retaliationLabel = retaliation
@@ -2229,26 +2246,33 @@
     const memberId = Number(member?.member_id || 0);
     if (!Number.isSafeInteger(memberId) || memberId <= 0) return "";
     const claim = knownClaim || core.activeDibsClaim(view.dibs, memberId, state.nowMs);
-    const eligibility = core.dibsEligibility(member, state.nowMs);
-    if (!claim && !eligibility.eligible) return "";
+    const eligibility = dibsClaimContext(member, view, claim);
     const isMine = !!claim && String(claim.claimedByPlayerId || "") === String(state.session?.playerId || "");
-    const tone = isMine ? "mine" : claim ? "taken" : "";
     const busy = state.dibsBusyTargetId === memberId;
     const anyBusy = state.dibsBusyTargetId > 0 || state.targetsSaving || state.targetQuickBusyId > 0;
-    const canMutate = rosterIsFresh(view.enemyFactionId)
+    const canMutate = isOnline()
+      && rosterIsFresh(view.ownFactionId)
+      && rosterIsFresh(view.enemyFactionId)
       && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId;
+    const canClaim = !claim && eligibility.eligible && canMutate;
+    const tone = isMine ? "mine" : claim ? "taken" : canClaim ? "" : "unavailable";
     const canRelease = isOnline()
       && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId;
     const remaining = claim ? core.duration(core.toTimestampMs(claim.expiresAt) - state.nowMs) : "";
+    const unavailableReason = eligibility.eligible
+      ? "Waiting for a fresh live connection."
+      : eligibility.reason;
     const label = claim
-      ? `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId} - ${remaining} left`
-      : eligibility.state === "hospitalized"
-        ? `Claim Dibs - leaves hospital in ${core.duration(Number(eligibility.hospitalUntil || 0) - state.nowMs)}`
-        : "Claim Dibs - attackable now";
-    const action = claim ? "inspect" : "claim";
+      ? `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId} - ${remaining} left${eligibility.eligible ? "" : ` - ${eligibility.reason}`}`
+      : canClaim
+        ? eligibility.state === "hospitalized"
+          ? `Claim Dibs - leaves hospital in ${core.duration(Number(eligibility.hospitalUntil || 0) - state.nowMs)} - ${eligibility.reason}`
+          : `Claim Dibs - attackable now - ${eligibility.reason}`
+        : `Dibs unavailable - ${unavailableReason}`;
+    const action = claim || !canClaim ? "inspect" : "claim";
     const dibsInstanceKey = String(instanceKey || `member-${memberId}`);
     const open = state.dibsInspectTargetId === memberId && state.dibsInspectKey === dibsInstanceKey ? " open" : "";
-    const disabled = anyBusy || (!claim && !canMutate);
+    const disabled = anyBusy;
     const release = isMine
       ? `<button type="button" class="wc-dibs-release" data-dibs-action="release" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-release-${escapeHtml(dibsInstanceKey)}"${!canRelease || anyBusy ? " disabled" : ""}>${busy && state.dibsBusyAction === "release" ? "Releasing..." : "Release & unwatch"}</button>`
       : "";
@@ -2256,7 +2280,7 @@
       ? `<div class="wc-target-error" role="alert">${escapeHtml(state.dibsError)}</div>`
       : "";
     const busyLabel = busy && state.dibsBusyAction === "claim" ? "Claiming Dibs" : label;
-    return `<span class="wc-dibs-wrap${open}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}"><button type="button" class="wc-dibs ${tone}" data-dibs-action="${action}" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-${escapeHtml(dibsInstanceKey)}" aria-label="${escapeHtml(busyLabel)}" aria-pressed="${open ? "true" : "false"}"${busy ? ' aria-busy="true"' : ""} title="${escapeHtml(label)}"${disabled ? " disabled" : ""}>&#9995;</button><span class="wc-dibs-tip" role="status"><button type="button" class="wc-dibs-close" data-dibs-action="close" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" aria-label="Close Dibs details" title="Close">&times;</button>${escapeHtml(label)}${error}${release}</span></span>`;
+    return `<span class="wc-dibs-wrap${open}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}"><button type="button" class="wc-dibs ${tone}" data-dibs-action="${action}" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-${escapeHtml(dibsInstanceKey)}" aria-label="${escapeHtml(busyLabel)}" aria-expanded="${open ? "true" : "false"}"${busy ? ' aria-busy="true"' : ""} title="${escapeHtml(label)}"${disabled ? " disabled" : ""}>&#9995;</button><span class="wc-dibs-tip" role="status"><button type="button" class="wc-dibs-close" data-dibs-action="close" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" aria-label="Close Dibs details" title="Close">&times;</button>${escapeHtml(label)}${error}${release}</span></span>`;
   }
 
   function attackLinkMarkup(url, targetMemberId, actionLabel, view, emphasized = false, knownClaim) {
@@ -2330,7 +2354,7 @@
       if (query && !`${option.name} ${option.memberId}`.toLowerCase().includes(query)) return false;
       if (state.targetFilter === "selected") return selected.has(option.memberId);
       if (state.targetFilter === "attackable") {
-        const eligibility = option.member ? core.dibsEligibility(option.member, state.nowMs) : undefined;
+        const eligibility = option.member ? dibsClaimContext(option.member, view) : undefined;
         return eligibility?.eligible === true && eligibility.state === "available";
       }
       if (state.targetFilter === "hospital") return option.status.includes("hospital");
@@ -2462,10 +2486,20 @@
   async function updateDibs(action, targetMemberId, instanceKey = "") {
     const memberId = Number(targetMemberId || 0);
     if (!core.dibsFeatureEnabled(state.settings) || state.dibsBusyTargetId || state.targetsSaving || state.targetQuickBusyId || !Number.isSafeInteger(memberId) || memberId <= 0) return false;
-    if (!isOnline() || state.authTerminal || state.keySaving || (action === "claim" && !currentEnemyRosterIsFresh())) {
+    if (!isOnline() || state.authTerminal || state.keySaving) {
       showDibsError("Dibs is unavailable until Warbuddy has a fresh live connection.", memberId);
       scheduleRender();
       return false;
+    }
+    if (action === "claim") {
+      const view = sessionView();
+      const target = view.enemyRoster.find((member) => Number(member?.member_id || 0) === memberId);
+      const eligibility = dibsClaimContext(target, view);
+      if (!eligibility.eligible) {
+        showDibsError(eligibility.reason, memberId);
+        scheduleRender();
+        return false;
+      }
     }
     const expectsSocketSnapshot = socketIsOpen();
     const resumeFallback = !expectsSocketSnapshot && state.fallbackActive;
