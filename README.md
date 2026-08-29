@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.49
+
+- Embeds a compact Warbuddy target context directly in Torn profile and attack pages instead of opening a floating panel.
+- Keeps the full Warbuddy controls in one inline strip above the ranked-war roster and removes the floating, collapse, drag, and display-mode workflow.
+- Shows independent Retal and Dibs state and actions beside every recognized enemy roster row's native Attack action.
+- Restores missing native contexts and roster controls after Torn rebuilds its page DOM, without adding backend changes, requests, polling, or live-event delay.
+
 ## 0.1.48
 
 - Reconciles every successful Dibs claim or release immediately through source-aware timestamp and application-sequence ordering, even when a socket event was expected.
@@ -74,7 +81,9 @@
 - Applies filtering and ordering with reversible CSS only; Torn's member rows are never moved or rewritten.
 - Falls back to the proven floating panel when Torn does not expose a safe integration point.
 
-Warbuddy is a Torn userscript for the live war action queue and retaliation opportunities supplied by the Grusmedia backend.
+> Historical note: versions before 0.1.49 used the floating and roster display modes described above. Version 0.1.49 replaces them with native target contexts and the ranked-war strip.
+
+Warbuddy is a Torn userscript that places the live war action queue, shared Dibs, and retaliation opportunities supplied by the Grusmedia backend into Torn's relevant native page surfaces.
 
 ## Install
 
@@ -93,7 +102,8 @@ The install URL ends in `.user.js` and includes update metadata, so supported us
 - A searchable, filterable personal-target picker with drafts that stay intact until Save or Cancel.
 - A compact shared Dibs marker for same-location attackable enemies and enemies leaving hospital within five minutes.
 - Active retaliation windows with explicit links to Torn.
-- A current-target card on Torn attack pages, with Watch/Unwatch and Dibs beside the target.
+- A compact target context inside Torn profile and attack pages, with status, Watch/Unwatch, Dibs, retaliation, and known loadout details when available.
+- One full inline control strip above the ranked-war roster, with independent Retal and Dibs state/actions beside each recognized enemy row's native Attack action.
 - A stable empty state when there are no immediate actions.
 
 Warbuddy displays information and links only. It never attacks, clicks, submits Torn actions, or notifies automatically. **Dibs** is an explicit coordination button that updates only the Grusmedia backend.
@@ -104,7 +114,7 @@ Warbuddy displays information and links only. It never attacks, clicks, submits 
 - The key is used to identify the player and faction, then exchanged for a six-hour, faction-scoped companion session.
 - The key is not saved to the backend during that exchange.
 - New and replacement keys are verified before they replace the locally stored working key.
-- Warbuddy keeps live transport active only while at least one expanded, visible Warbuddy tab needs it and the device is online.
+- Warbuddy keeps live transport active while at least one visible supported Warbuddy tab needs it and the device is online.
 - Tabs for the same verified player and faction elect one connection owner and receive its events immediately through a private per-install browser channel.
 - The Torn API key, companion session token, and authorization header never enter that cross-tab channel.
 - Its backend session can read War Tracker settings, rosters, score, retaliation, and shared Dibs for the verified faction. It can save only that player's watched-target list and Dibs actions.
@@ -134,6 +144,15 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.49 - 29 August 2026
+
+- Replaces the body-mounted floating presentation with Torn-native surfaces: `#warbuddy-target-context` on profile and attack targets, and a full inline strip only above the ranked-war roster.
+- Removes the active display-mode, collapse, saved-position, drag, and floating-fallback workflow while preserving the existing authenticated session and live transport.
+- Adds a dedicated roster action area immediately before each recognized enemy row's native Attack action. Retal and Dibs state remain independent, and Dibs claim/release or inspect controls stay available even when the other state is absent.
+- Keeps fallback Dibs and retaliation controls beside the profile link when Torn omits an Attack action for that row.
+- Uses `activeSurfaceMissing` from both DOM observation and the route heartbeat to restore a removed target context, ranked-war strip, row tools, or roster action area after Torn remounts its UI.
+- Adds profile-route metadata and runtime target detection without changing backend authority, Torn API usage, polling, broker behavior, or live-event delivery timing.
 
 ### 0.1.48 - 29 August 2026
 

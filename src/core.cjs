@@ -104,8 +104,28 @@
     return Number.isSafeInteger(memberId) && memberId > 0 ? memberId : 0;
   };
 
+  const profilePageTargetId = (value) => {
+    let url;
+    try {
+      url = new URL(String(value || ""), "https://www.torn.com/");
+    } catch {
+      return 0;
+    }
+    if (url.hostname.toLowerCase().replace(/^www\./, "") !== "torn.com") return 0;
+    if (!/^\/profiles\.php$/i.test(url.pathname)) return 0;
+    const memberId = Number(
+      url.searchParams.get("XID")
+      || url.searchParams.get("xid")
+      || url.searchParams.get("ID")
+      || url.searchParams.get("id")
+      || 0
+    );
+    return Number.isSafeInteger(memberId) && memberId > 0 ? memberId : 0;
+  };
+
   const isWarbuddyPageUrl = (value) => {
     if (isFactionPageUrl(value)) return true;
+    if (profilePageTargetId(value)) return true;
     let url;
     try {
       url = new URL(String(value || ""), "https://www.torn.com/");
@@ -128,24 +148,7 @@
     return /(?:^|\/)war\/rank(?:[/?#]|$)/i.test(decodeURIComponent(String(url.hash || "")).replace(/^#\/?/, ""));
   };
 
-  const profileMemberIdFromUrl = (value) => {
-    let url;
-    try {
-      url = new URL(String(value || ""), "https://www.torn.com/");
-    } catch {
-      return 0;
-    }
-    if (url.hostname.toLowerCase().replace(/^www\./, "") !== "torn.com") return 0;
-    if (!/^\/profiles\.php$/i.test(url.pathname)) return 0;
-    const memberId = Number(
-      url.searchParams.get("XID")
-      || url.searchParams.get("xid")
-      || url.searchParams.get("ID")
-      || url.searchParams.get("id")
-      || 0
-    );
-    return Number.isSafeInteger(memberId) && memberId > 0 ? memberId : 0;
-  };
+  const profileMemberIdFromUrl = profilePageTargetId;
 
   const memberStatus = (member) =>
     String(member?.status?.userStatus || member?.status?.state || member?.status?.status || "").toLowerCase();
@@ -924,6 +927,7 @@
     normalizeRosterFilter,
     normalizeTargetGroups,
     notificationCandidates,
+    profilePageTargetId,
     profileMemberIdFromUrl,
     rosterFilterMatches,
     rosterOrder,
