@@ -148,6 +148,26 @@
     return /(?:^|\/)war\/rank(?:[/?#]|$)/i.test(decodeURIComponent(String(url.hash || "")).replace(/^#\/?/, ""));
   };
 
+  const isOwnRankedWarPageUrl = (value, ownFactionId = 0) => {
+    if (!isRankedWarPageUrl(value)) return false;
+    let url;
+    try {
+      url = new URL(String(value || ""), "https://www.torn.com/");
+    } catch {
+      return false;
+    }
+    const step = String(url.searchParams.get("step") || "").trim().toLowerCase();
+    if (step === "your") return true;
+    if (step !== "profile") return false;
+    const pageFactionId = Number(url.searchParams.get("ID") || url.searchParams.get("id") || 0);
+    const authenticatedFactionId = Number(ownFactionId || 0);
+    return Number.isSafeInteger(pageFactionId)
+      && pageFactionId > 0
+      && Number.isSafeInteger(authenticatedFactionId)
+      && authenticatedFactionId > 0
+      && pageFactionId === authenticatedFactionId;
+  };
+
   const profileMemberIdFromUrl = profilePageTargetId;
 
   const memberStatus = (member) =>
@@ -918,6 +938,7 @@
     formatBsp,
     inferEnemyFactionId,
     isFactionPageUrl,
+    isOwnRankedWarPageUrl,
     isRankedWarPageUrl,
     isWarbuddyPageUrl,
     locationCode,

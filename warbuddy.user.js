@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.53
+// @version      0.1.54
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -176,6 +176,26 @@
       return false;
     }
     return /(?:^|\/)war\/rank(?:[/?#]|$)/i.test(decodeURIComponent(String(url.hash || "")).replace(/^#\/?/, ""));
+  };
+
+  const isOwnRankedWarPageUrl = (value, ownFactionId = 0) => {
+    if (!isRankedWarPageUrl(value)) return false;
+    let url;
+    try {
+      url = new URL(String(value || ""), "https://www.torn.com/");
+    } catch {
+      return false;
+    }
+    const step = String(url.searchParams.get("step") || "").trim().toLowerCase();
+    if (step === "your") return true;
+    if (step !== "profile") return false;
+    const pageFactionId = Number(url.searchParams.get("ID") || url.searchParams.get("id") || 0);
+    const authenticatedFactionId = Number(ownFactionId || 0);
+    return Number.isSafeInteger(pageFactionId)
+      && pageFactionId > 0
+      && Number.isSafeInteger(authenticatedFactionId)
+      && authenticatedFactionId > 0
+      && pageFactionId === authenticatedFactionId;
   };
 
   const profileMemberIdFromUrl = profilePageTargetId;
@@ -948,6 +968,7 @@
     formatBsp,
     inferEnemyFactionId,
     isFactionPageUrl,
+    isOwnRankedWarPageUrl,
     isRankedWarPageUrl,
     isWarbuddyPageUrl,
     locationCode,
@@ -1430,7 +1451,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.53";
+  const SCRIPT_VERSION = "0.1.54";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -1446,6 +1467,7 @@
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
   const ROSTER_ACTIONS_CLASS = "warbuddy-roster-actions";
   const TARGET_CONTEXT_ID = "warbuddy-target-context";
+  const PROFILE_HOST_CLASS = "warbuddy-profile-context-host";
   const SAFE_INTEGRATED_PARENT_DISPLAYS = new Set(["block", "flow-root", "list-item"]);
   const STATUS_CELL_CLASS = "warbuddy-status-cell";
   const STATUS_DETAIL_CLASS = "warbuddy-status-detail";
@@ -1747,7 +1769,8 @@
     #${TARGET_CONTEXT_ID} .wc-loadout-value { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #${TARGET_CONTEXT_ID}.wc-compact-context { position:static !important; inset:auto !important; z-index:auto; min-width:0; flex-wrap:nowrap; align-items:center; gap:2px; border:1px solid rgba(113,113,122,.65); border-left-width:1px; border-radius:4px; background:rgba(24,24,27,.72); box-shadow:none; font-size:10px; line-height:1.2; vertical-align:middle; }
     #${TARGET_CONTEXT_ID}.wc-attack-context { display:inline-flex; width:auto; max-width:min(260px,100%); flex:0 1 auto; overflow:hidden; margin:1px 0 1px 4px; padding:1px 3px; }
-    #${TARGET_CONTEXT_ID}.wc-profile-context { display:flex; width:100%; height:32px; max-height:32px; flex:0 0 100%; overflow:visible; margin:4px 0; padding:3px 5px; }
+    .${PROFILE_HOST_CLASS} { position:relative !important; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context { position:absolute !important; inset:auto 6px 6px auto !important; z-index:6; display:inline-flex; width:auto; max-width:calc(100% - 12px); height:26px; max-height:26px; flex:0 1 auto; overflow:visible; margin:0; padding:2px 3px; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-brand { display:inline-flex; height:20px; align-items:center; color:#9fbd57; font-size:9px; font-weight:900; letter-spacing:.02em; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-states { min-width:0; max-width:100%; flex:1 1 auto; flex-wrap:nowrap; gap:2px; overflow:hidden; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-actions { min-width:0; flex:0 0 auto; flex-wrap:nowrap; gap:2px; margin-left:auto; }
@@ -1760,7 +1783,7 @@
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-loadout-button { width:20px; height:20px; border-color:transparent; background:transparent; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-result { display:inline-flex; min-width:0; min-height:20px; max-width:150px; flex:0 1 auto; align-items:center; overflow:hidden; color:#86efac; padding:1px 3px; font-size:9px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-error { display:inline-flex; width:18px; height:18px; flex:0 0 auto; align-items:center; justify-content:center; border:1px solid #b91c1c; border-radius:50%; color:#fca5a5; font-size:10px; font-weight:900; cursor:help; }
-    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-tip { top:auto; bottom:24px; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-tip { top:auto; bottom:calc(100% + 4px); }
     @media (max-width:620px) { #${TARGET_CONTEXT_ID} .wc-native-details { order:5; flex-basis:100%; white-space:normal; } #${TARGET_CONTEXT_ID} .wc-native-states { margin-left:auto; } .${ROSTER_ACTIONS_CLASS} .wc-native-state { max-width:115px; overflow:hidden; text-overflow:ellipsis; } }
     @media (pointer:coarse) { #${TARGET_CONTEXT_ID} .wc-button, #${TARGET_CONTEXT_ID} .wc-link, #${TARGET_CONTEXT_ID} .wc-loadout-button, #${TARGET_CONTEXT_ID} .wc-attack-icon, :is(#${TARGET_CONTEXT_ID}, .${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-dibs { min-width:36px; min-height:36px; } #${TARGET_CONTEXT_ID}.wc-profile-context { height:44px; max-height:44px; } }
     .${STATUS_CELL_CLASS} { position:relative !important; color:transparent !important; text-shadow:none !important; }
@@ -2112,7 +2135,10 @@
     state.targetQuickError = "";
     closeDibsDetails();
   };
-  const isRosterModePage = () => core.isRankedWarPageUrl(window.location.href);
+  const isRosterModePage = (view = null) => core.isOwnRankedWarPageUrl(
+    window.location.href,
+    view?.ownFactionId || state.session?.factionId || 0
+  );
   const targetPageMemberId = () => Number(state.attackTargetId || state.profileTargetId || 0);
   const hasWarbuddySurface = () => !!targetPageMemberId()
     || isRosterModePage()
@@ -2297,6 +2323,7 @@
 
   function removeTargetContext() {
     document.getElementById(TARGET_CONTEXT_ID)?.remove();
+    document.querySelectorAll?.(`.${PROFILE_HOST_CLASS}`).forEach((host) => host.classList.remove(PROFILE_HOST_CLASS));
   }
 
   function rosterProfileAnchors(roster, root = document) {
@@ -2325,21 +2352,30 @@
       if (
         !enemyIds.has(memberId)
         || seen.has(memberId)
-        || !(rankedWarRowForAnchor(anchor) || rankedWarOwnRowForAnchor(anchor))
+        || !rankedWarRowForAnchor(anchor)
       ) return false;
       seen.add(memberId);
       return true;
     });
   }
 
+  function rankedWarAttackLinkForMember(row, memberId) {
+    const targetId = Number(memberId || 0);
+    if (!row || !Number.isSafeInteger(targetId) || targetId <= 0) return null;
+    return Array.from(row.querySelectorAll?.("a[href*='sid=attack']") || [])
+      .find((link) => core.attackPageTargetId(link.getAttribute?.("href") || link.href || "") === targetId) || null;
+  }
+
   function rankedWarRowForAnchor(anchor) {
+    const memberId = core.profileMemberIdFromUrl(anchor?.getAttribute?.("href") || anchor?.href || "");
+    if (!memberId) return null;
     let candidate = anchor?.parentElement;
     for (let depth = 0; candidate && depth < 10; depth += 1, candidate = candidate.parentElement) {
       if (candidate === document.body || candidate === document.documentElement) return null;
       const profileLinks = Array.from(candidate.querySelectorAll?.("a[href*='profiles.php']") || [])
         .filter((link) => core.profileMemberIdFromUrl(link.getAttribute?.("href") || link.href || "") > 0);
       if (profileLinks.length > 1) return null;
-      if (profileLinks.length === 1 && candidate.querySelector?.("a[href*='sid=attack']")) return candidate;
+      if (profileLinks.length === 1 && rankedWarAttackLinkForMember(candidate, memberId)) return candidate;
     }
 
     return null;
@@ -2382,7 +2418,8 @@
       const ownRow = rankedWarOwnRowForAnchor(ownAnchor);
       if (!ownRow) continue;
       for (const enemyAnchor of enemyAnchors) {
-        const enemyRow = rankedWarRowForAnchor(enemyAnchor) || rankedWarOwnRowForAnchor(enemyAnchor);
+        const enemyRow = rankedWarRowForAnchor(enemyAnchor);
+        if (!enemyRow) continue;
         let board = lowestCommonAncestor(ownRow, enemyRow);
         if (!board || board === document.body || board === document.documentElement) continue;
         while (board?.parentElement && invalidParents.has(String(board.parentElement.tagName || "").toUpperCase())) {
@@ -2464,7 +2501,7 @@
       return { mount: document.body, placement: "floating", fallback: false };
     }
 
-    const desiredPlacement = core.isRankedWarPageUrl(window.location.href) ? "rank" : "";
+    const desiredPlacement = isRosterModePage(view) ? "rank" : "";
     if (!desiredPlacement) {
       document.getElementById(PANEL_ID)?.remove();
       removeIntegratedMount(false);
@@ -3289,6 +3326,12 @@
       ) void ensureConnected();
       if (state.phase === "connected") void recordScriptCheckIn("websocket");
       if (state.phase === "fallback") void recordScriptCheckIn("compatible");
+      if (
+        state.profileTargetId
+        && !state.attackTargetId
+        && state.displayMode !== "floating"
+        && !targetPageContextRelevant(sessionView())
+      ) return;
       const renderInterval = hasTimeSensitiveState() ? TICKER_INTERVAL_MS : IDLE_RENDER_INTERVAL_MS;
       if ((!isTornPda || !state.fallbackActive) && Date.now() - state.lastRenderAt >= renderInterval) {
         scheduleRender();
@@ -3557,7 +3600,7 @@
 
   function syncIntegratedMemberTools(view = sessionView()) {
     const canFindBoard = state.active
-      && core.isRankedWarPageUrl(window.location.href)
+      && isRosterModePage(view)
       && Array.isArray(view?.enemyRoster)
       && view.enemyRoster.length > 0;
     if (!canFindBoard) {
@@ -3622,9 +3665,7 @@
       const retaliationRemaining = retaliation
         ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
         : "";
-      const row = board?.contains?.(anchor)
-        ? rankedWarOwnRowForAnchor(anchor)
-        : rankedWarRowForAnchor(anchor) || rankedWarOwnRowForAnchor(anchor);
+      const row = rankedWarRowForAnchor(anchor);
       const actionable = actionableIds.has(memberId) || !!retaliation;
       const availability = core.memberAvailability(member, state.nowMs);
       const flags = {
@@ -3649,7 +3690,7 @@
         if (row.dataset.warbuddyAvailability !== availability.state) row.dataset.warbuddyAvailability = availability.state;
       }
 
-      const attackLink = row?.querySelector?.("a[href*='sid=attack']");
+      const attackLink = rankedWarAttackLinkForMember(row, memberId);
       syncIntegratedStatusCell(row, attackLink, memberId, availability, keepStatusCells);
       if (attackLink) {
         keepAttackLinks.add(attackLink);
@@ -3955,6 +3996,12 @@
       return;
     }
     const wasWatched = savedTargetIds().includes(memberId);
+    const currentEnemy = sessionView().enemyRoster.some((member) => Number(member?.member_id || 0) === memberId);
+    if (!wasWatched && !currentEnemy) {
+      state.targetQuickError = "Only current war opponents can be added to watched targets.";
+      scheduleRender();
+      return;
+    }
     const next = new Set(savedTargetIds());
     if (wasWatched) next.delete(memberId);
     else if (next.size < MAX_WATCHED_TARGETS) next.add(memberId);
@@ -4214,6 +4261,19 @@
     return `<span class="wc-loadout${open ? " open" : ""}"><button type="button" class="wc-loadout-button" data-action="toggle-loadout" data-loadout-target="${Number(memberId || 0)}" aria-label="Known loadout" aria-expanded="${open ? "true" : "false"}" title="Known loadout">&#128737;</button><span class="wc-loadout-tip">${rows}</span></span>`;
   }
 
+  function targetPageContextRelevant(view = sessionView()) {
+    const memberId = targetPageMemberId();
+    if (!memberId) return false;
+    if (state.attackTargetId) return true;
+    if (!state.profileTargetId) return false;
+    if (savedTargetIds().includes(memberId)) return true;
+    if ((view?.enemyRoster || []).some((member) => Number(member?.member_id || 0) === memberId)) return true;
+    if ((view?.retaliation || []).some((attack) => Number(attack?.attackerId || 0) === memberId)) return true;
+    if (memberLoadout(view, memberId)) return true;
+    return core.dibsFeatureEnabled(state.settings)
+      && !!core.activeDibsClaim(view?.dibs, memberId, state.nowMs);
+  }
+
   function attackTargetLabelsContainer() {
     const targetId = Number(state.attackTargetId || 0);
     const candidates = Array.from(document.querySelectorAll?.("[class*='labelsContainer']") || [])
@@ -4231,17 +4291,20 @@
   }
 
   function profileTargetContainer() {
-    const readyForToolbar = (candidate) => {
-      if (!candidate || candidate.isConnected === false) return false;
-      if (Array.from(candidate.children || []).some((child) => child?.id === TARGET_CONTEXT_ID)) return true;
-      const nativeControls = Array.from(candidate.querySelectorAll?.("a[href], button, [role='button']") || [])
-        .filter((control) => !control.closest?.(`#${TARGET_CONTEXT_ID}`));
-      return nativeControls.length >= 2;
-    };
-    const exact = document.querySelector?.(".profile-container");
-    if (exact) return readyForToolbar(exact) ? exact : null;
-    const candidates = Array.from(document.querySelectorAll?.("[class*='profile-container']") || [])
-      .filter((candidate) => readyForToolbar(candidate));
+    const targetId = Number(state.profileTargetId || 0);
+    if (!targetId) return null;
+    const existing = document.getElementById?.(TARGET_CONTEXT_ID);
+    if (
+      existing?.classList?.contains?.("wc-profile-context")
+      && Number(existing.dataset?.memberId || 0) === targetId
+      && existing.parentElement
+      && existing.parentElement.isConnected !== false
+      && existing.parentElement.matches?.(".profile-container")
+    ) return existing.parentElement;
+    const candidates = Array.from(document.querySelectorAll?.(".profile-container") || [])
+      .filter((candidate) => candidate?.isConnected !== false)
+      .filter((candidate) => Array.from(candidate.querySelectorAll?.("a[href*='sid=attack']") || [])
+        .some((control) => core.attackPageTargetId(control.getAttribute?.("href") || control.href || "") === targetId));
     return candidates.length === 1 ? candidates[0] : null;
   }
 
@@ -4268,7 +4331,11 @@
     const watched = savedTargetIds().includes(memberId);
     const atLimit = !watched && savedTargetIds().length >= MAX_WATCHED_TARGETS;
     const busy = state.targetQuickBusyId === memberId;
-    const watchUnavailable = !isOnline() || state.authTerminal || state.targetQuickBusyId > 0 || state.targetsSaving || !currentEnemyRosterIsFresh();
+    const watchUnavailable = !isOnline()
+      || state.authTerminal
+      || state.targetQuickBusyId > 0
+      || state.targetsSaving
+      || (!watched && !currentEnemyRosterIsFresh());
     const activeRetaliation = view.retaliation.find((attack) => Number(attack?.attackerId || 0) === memberId);
     const name = String(member?.member_name || activeRetaliation?.attackerName || `Player ${memberId}`);
     const claim = core.dibsFeatureEnabled(state.settings)
@@ -4301,7 +4368,7 @@
       const compactDibsControl = savedKey && (enemyMember || claim)
         ? dibsMarkup(targetRecord, view, claim, `${surface}-${memberId}`)
         : "";
-      const compactWatchControl = savedKey
+      const compactWatchControl = savedKey && (enemyMember || watched)
         ? `<button type="button" class="wc-attack-icon${watched ? " active" : ""}" data-action="toggle-watch" data-target-member="${memberId}" data-focus-key="watch-${memberId}" aria-label="${watched ? "Unwatch" : "Watch"} ${escapeHtml(name)}" title="${watched ? "Remove from watched targets" : "Watch this target"}"${watchUnavailable || atLimit ? " disabled" : ""}>${busy ? "…" : watched ? "&#9733;" : "&#9734;"}</button>`
         : "";
       const compactLoadoutControl = state.profileTargetId && savedKey ? loadoutMarkup(view, memberId) : "";
@@ -4362,7 +4429,7 @@
 
   function syncTargetPageContext(view = sessionView()) {
     const memberId = targetPageMemberId();
-    if (!state.active || !memberId) {
+    if (!state.active || !memberId || !targetPageContextRelevant(view)) {
       removeTargetContext();
       return false;
     }
@@ -4395,6 +4462,16 @@
     }
     context.className = `warbuddy-target-context wc-compact-context wc-${mountPoint.placement}-context`;
     context.dataset.memberId = String(memberId);
+    const profileHost = mountPoint.placement === "profile" ? mountPoint.parent : null;
+    document.querySelectorAll?.(`.${PROFILE_HOST_CLASS}`).forEach((host) => {
+      if (host !== profileHost) host.classList.remove(PROFILE_HOST_CLASS);
+    });
+    if (profileHost && !profileHost.classList?.contains?.(PROFILE_HOST_CLASS)) {
+      const hostPosition = typeof getComputedStyle === "function"
+        ? String(getComputedStyle(profileHost)?.position || "").toLowerCase()
+        : "static";
+      if (!hostPosition || hostPosition === "static") profileHost.classList?.add?.(PROFILE_HOST_CLASS);
+    }
     if (context.parentNode !== mountPoint.parent) {
       mountPoint.parent.insertBefore(context, mountPoint.before || null);
     }
@@ -4471,7 +4548,7 @@
     state.lastRenderAt = Date.now();
     const view = sessionView();
     const targetPage = !!targetPageMemberId();
-    const rankedWarPage = core.isRankedWarPageUrl(window.location.href);
+    const rankedWarPage = isRosterModePage(view);
     if (targetPage) syncTargetPageContext(view);
     else removeTargetContext();
     if (state.displayMode !== "floating" && targetPage) {
@@ -4499,7 +4576,7 @@
       panel.id = PANEL_ID;
     }
     if (panel.parentNode !== mount) mount.appendChild(panel);
-    const rosterMode = mountState.placement === "inline" && isRosterModePage();
+    const rosterMode = mountState.placement === "inline" && isRosterModePage(view);
     const floatingMode = mountState.placement === "floating";
     panel.classList.toggle("wc-floating", floatingMode);
     panel.classList.toggle("wc-integrated-inline", mountState.placement === "inline");
@@ -4911,6 +4988,7 @@
     const floatingPanelMissing = state.displayMode === "floating" && !document.getElementById(PANEL_ID);
     if (targetPageMemberId()) {
       const context = document.getElementById(TARGET_CONTEXT_ID);
+      if (!targetPageContextRelevant(view)) return !!context || floatingPanelMissing;
       const mountPoint = targetContextMountPoint();
       return !context
         || !mountPoint?.parent
@@ -4919,7 +4997,7 @@
         || !context.querySelector?.(".wc-native-brand")
         || floatingPanelMissing;
     }
-    if (!core.isRankedWarPageUrl(window.location.href)) return floatingPanelMissing;
+    if (!isRosterModePage(view)) return floatingPanelMissing;
     const board = rankedWarBoardForView(view);
     if (!board?.parentElement || board.isConnected === false) return floatingPanelMissing;
     if (!document.getElementById(PANEL_ID)) return true;
@@ -4928,8 +5006,8 @@
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
       const tools = Array.from(anchor.parentElement?.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`) || [])
         .find((candidate) => Number(candidate.dataset?.memberId || 0) === memberId);
-      const row = rankedWarOwnRowForAnchor(anchor) || rankedWarRowForAnchor(anchor);
-      const attackLink = row?.querySelector?.("a[href*='sid=attack']");
+      const row = rankedWarRowForAnchor(anchor);
+      const attackLink = rankedWarAttackLinkForMember(row, memberId);
       const rosterActions = attackLink
         ? Array.from(attackLink.parentElement?.querySelectorAll?.(`.${ROSTER_ACTIONS_CLASS}`) || [])
           .find((candidate) => Number(candidate.dataset?.memberId || 0) === memberId)
@@ -4943,10 +5021,18 @@
     if (state.pageObserver && state.observedBody === document.body) return;
     state.pageObserver?.disconnect();
     state.observedBody = document.body;
-    state.pageObserver = new MutationObserver(() => {
+    state.pageObserver = new MutationObserver((mutations = []) => {
+      if (window.location.href !== state.lastPageHref) {
+        syncPageActivation();
+        return;
+      }
+      const outsideWarbuddy = mutations.some((mutation) => !mutation?.target?.closest?.(
+        `#${PANEL_ID}, #${TARGET_CONTEXT_ID}, #${INTEGRATED_WRAPPER_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}`
+      ));
+      if (!outsideWarbuddy) return;
       if (activeSurfaceMissing()) scheduleRender();
     });
-    state.pageObserver.observe(document.body, { childList: true });
+    state.pageObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   function pollPageActivation() {
@@ -5021,7 +5107,7 @@
       window.alert(`Warbuddy v${SCRIPT_VERSION} is installed, but this is not a supported Torn faction, profile, or attack page.\n\n${window.location.href}`);
       return;
     }
-    if (!targetPageMemberId() && !core.isRankedWarPageUrl(window.location.href)) {
+    if (!targetPageMemberId() && !isRosterModePage()) {
       setDisplayMode("floating");
       return;
     }
@@ -5084,7 +5170,7 @@
   registerMenuCommand("Warbuddy: change API key", () => {
     const menuAttackTargetId = core.attackPageTargetId(window.location.href);
     const menuProfileTargetId = core.profilePageTargetId(window.location.href);
-    if (!core.isRankedWarPageUrl(window.location.href) && !menuAttackTargetId && !menuProfileTargetId) {
+    if (!isRosterModePage() && !menuAttackTargetId && !menuProfileTargetId) {
       window.alert("Open the ranked-war roster, a Torn profile, or an attack page first, then run this command again.");
       return;
     }
@@ -5133,7 +5219,7 @@
   window.addEventListener("offline", syncForegroundState);
   const handleViewportResize = () => {
     positionOpenDibsTip(document);
-    if (state.displayMode !== "floating" && core.isRankedWarPageUrl(window.location.href)) scheduleRender();
+    if (state.displayMode !== "floating" && isRosterModePage()) scheduleRender();
   };
   window.addEventListener("resize", handleViewportResize);
   window.visualViewport?.addEventListener?.("resize", handleViewportResize);

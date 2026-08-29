@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.54
+
+- Restricts native roster integration to your authenticated faction's ranked-war page; other factions' war profiles are never decorated, sorted, or rearranged.
+- Leaves unrelated player profiles untouched and mounts the compact profile chip only for a current opponent, Retal, active Dibs, known loadout, or existing watched target.
+- Uses a target-specific native Attack control to verify the profile Actions container and overlays an auto-sized badge without entering Torn's layout flow.
+- Tightens enemy-row detection and notices SPA route changes immediately so old roster decorations cannot leak into the next faction page.
+
 ## 0.1.53
 
 - Replaces the wrapping profile card with one stable compact toolbar inside Torn's completed profile Actions container.
@@ -177,6 +184,13 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.54 - 29 August 2026
+
+- Adds an authenticated-faction route guard around every native ranked-war DOM mutation while retaining explicitly selected floating tools on other faction pages.
+- Removes stale integrated panels and row decorations immediately when Torn navigates from your war roster to another faction's war profile.
+- Prevents unrelated player profiles from receiving a Warbuddy toolbar or offering a new watched-target action; active retaliation, Dibs, known loadout, and existing-watch contexts remain available.
+- Replaces the generic profile control-count heuristic with a unique target-specific Actions mount, uses an out-of-flow 26px badge, and requires member-matching Attack controls for enemy rows and board discovery.
 
 ### 0.1.53 - 29 August 2026
 
