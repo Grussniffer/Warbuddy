@@ -5,9 +5,10 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.49";
+  const SCRIPT_VERSION = "0.1.50";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
+  const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
   const FOCUS_STORAGE = "warbuddy_focus_mode";
   const NOTIFICATION_STORAGE = "warbuddy_notifications";
   const TARGET_GROUP_STORAGE = "warbuddy_target_groups";
@@ -154,6 +155,7 @@
     nowMs: Date.now(),
     clockOffsetMs: 0,
     clockSource: "device",
+    displayMode: core.normalizeDisplayMode(storage.get(DISPLAY_MODE_STORAGE, "")),
     rosterControlsOpen: String(storage.get(ROSTER_CONTROLS_STORAGE, "")) === "1",
     rosterFilter: core.normalizeRosterFilter(storage.get(ROSTER_FILTER_STORAGE, "")),
     rosterPrioritySort: String(storage.get(ROSTER_SORT_STORAGE, "")) === "1",
@@ -330,8 +332,7 @@
     #${PANEL_ID}.wc-collapsed { width:auto; min-width:154px; max-width:calc(100vw - 20px); border-radius:999px; }
     #${PANEL_ID}.wc-collapsed .wc-header { min-height:34px; align-items:center; border:0; border-radius:999px; padding:4px 5px 4px 10px; }
     #${PANEL_ID}.wc-collapsed .wc-matchup, #${PANEL_ID}.wc-collapsed .wc-version { display:none; }
-    #${PANEL_ID} .wc-header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; min-height:42px; padding:5px 7px; border-bottom:1px solid #27272a; background:#18181b; cursor:move; touch-action:none; user-select:none; }
-    #${PANEL_ID}.wc-dragging .wc-header { cursor:grabbing; }
+    #${PANEL_ID} .wc-header { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; min-height:42px; padding:5px 7px; border-bottom:1px solid #27272a; background:#18181b; cursor:default; touch-action:auto; user-select:none; }
     #${PANEL_ID} .wc-heading { min-width:0; flex:1; }
     #${PANEL_ID} .wc-title-row { display:flex; min-width:0; align-items:center; gap:4px; }
     #${PANEL_ID} .wc-player { min-width:0; flex:0 1 auto; overflow:hidden; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
@@ -670,7 +671,9 @@
   };
   const isRosterModePage = () => core.isRankedWarPageUrl(window.location.href);
   const targetPageMemberId = () => Number(state.attackTargetId || state.profileTargetId || 0);
-  const hasWarbuddySurface = () => !!targetPageMemberId() || isRosterModePage();
+  const hasWarbuddySurface = () => !!targetPageMemberId()
+    || isRosterModePage()
+    || state.displayMode === "floating";
   const isForeground = () => state.active
     && hasWarbuddySurface()
     && document.visibilityState !== "hidden"
@@ -994,6 +997,11 @@
   }
 
   function resolvePanelMount(view) {
+    if (state.displayMode === "floating") {
+      removeIntegratedMount(true);
+      return { mount: document.body, placement: "floating", fallback: false };
+    }
+
     const desiredPlacement = core.isRankedWarPageUrl(window.location.href) ? "rank" : "";
     if (!desiredPlacement) {
       document.getElementById(PANEL_ID)?.remove();
@@ -1030,6 +1038,15 @@
     document.getElementById(PANEL_ID)?.remove();
     removeIntegratedMount(false);
     return { mount: null, placement: "none", fallback: false };
+  }
+
+  function setDisplayMode(value) {
+    const nextMode = core.normalizeDisplayMode(value);
+    state.displayMode = nextMode;
+    storage.set(DISPLAY_MODE_STORAGE, nextMode);
+    removeIntegratedMount(true);
+    scheduleRender();
+    syncForegroundState();
   }
 
   async function getProfileWithKey(key) {
@@ -2832,14 +2849,17 @@
     const status = statusView();
     const savedKey = getStoredKey();
     const mutationBusy = state.targetsSaving || state.targetQuickBusyId > 0 || state.dibsBusyTargetId > 0;
-    const showKeyEditor = !savedKey || state.keyEditorOpen || state.authTerminal;
+    const showKeyEditor = state.displayMode !== "floating" && (!savedKey || state.keyEditorOpen || state.authTerminal);
     const keyEditor = showKeyEditor
       ? `${state.keyEditorError ? `<div class="wc-native-error" role="alert">${escapeHtml(state.keyEditorError)}</div>` : ""}<div class="wc-native-key"><input class="wc-input wc-secret-input" data-field="api-key" data-focus-key="api-key-native" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" aria-label="Torn API key" placeholder="${savedKey ? "Replacement Torn API key" : "Torn API key"}" value="${escapeHtml(state.keyDraft)}"${state.keySaving ? " disabled" : ""}><button type="button" class="wc-button primary" data-action="connect"${state.keySaving || mutationBusy ? " disabled" : ""}>${state.keySaving ? "Checking..." : savedKey ? "Replace" : "Connect Warbuddy"}</button>${savedKey && !state.authTerminal ? `<button type="button" class="wc-button" data-action="cancel-key"${state.keySaving ? " disabled" : ""}>Cancel</button>` : ""}</div>`
       : "";
     const targetControls = savedKey
       ? `${loadoutMarkup(view, memberId)}${enemyMember || claim ? dibsMarkup(targetRecord, view, claim, `target-${memberId}`) : ""}<button type="button" class="wc-button${watched ? " primary" : ""}" data-action="toggle-watch" data-target-member="${memberId}" data-focus-key="watch-${memberId}"${watchUnavailable || atLimit ? " disabled" : ""}>${busy ? "Saving..." : watched ? "Unwatch" : "Watch"}</button>`
       : "";
-    return `<span class="wc-native-brand">Warbuddy · ${escapeHtml(status.label)}</span><span class="wc-native-target" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="wc-native-details" title="${escapeHtml(details)}">${escapeHtml(details)}</span><span class="wc-native-states">${retaliationState}${dibsState}</span><span class="wc-native-actions">${targetControls}<a class="wc-link" href="https://www.torn.com/factions.php?step=your&type=1#/war/rank">War roster</a></span>${keyEditor}${outcomeMarkup}${quickError}${dibsError}`;
+    const layoutControl = state.displayMode === "floating"
+      ? '<button type="button" class="wc-button" data-action="set-display-mode" data-display-mode="native" title="Hide the optional floating tools panel">Native only</button>'
+      : '<button type="button" class="wc-button" data-action="set-display-mode" data-display-mode="floating" title="Show the full Warbuddy tools in a floating panel">Floating tools</button>';
+    return `<span class="wc-native-brand">Warbuddy · ${escapeHtml(status.label)}</span><span class="wc-native-target" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="wc-native-details" title="${escapeHtml(details)}">${escapeHtml(details)}</span><span class="wc-native-states">${retaliationState}${dibsState}</span><span class="wc-native-actions">${targetControls}${layoutControl}<a class="wc-link" href="https://www.torn.com/factions.php?step=your&type=1#/war/rank">War roster</a></span>${keyEditor}${outcomeMarkup}${quickError}${dibsError}`;
   }
 
   function handleTargetContextAction(event) {
@@ -2858,6 +2878,11 @@
       const memberId = Number(control.dataset?.loadoutTarget || 0);
       state.loadoutOpenTargetId = state.loadoutOpenTargetId === memberId ? 0 : memberId;
       scheduleRender();
+      return;
+    }
+    if (action === "set-display-mode") {
+      event.preventDefault();
+      setDisplayMode(control.dataset?.displayMode);
       return;
     }
     if (action === "connect") {
@@ -2976,20 +3001,23 @@
     }
     state.lastRenderAt = Date.now();
     const view = sessionView();
-    if (targetPageMemberId()) {
-      syncTargetPageContext(view);
+    const targetPage = !!targetPageMemberId();
+    const rankedWarPage = core.isRankedWarPageUrl(window.location.href);
+    if (targetPage) syncTargetPageContext(view);
+    else removeTargetContext();
+    if (state.displayMode !== "floating" && targetPage) {
       document.getElementById(PANEL_ID)?.remove();
       removeInlineMemberTools();
       removeIntegratedMount(false);
       return;
     }
-    removeTargetContext();
-    if (!core.isRankedWarPageUrl(window.location.href)) {
+    if (state.displayMode !== "floating" && !rankedWarPage) {
       document.getElementById(PANEL_ID)?.remove();
       removeInlineMemberTools();
       removeIntegratedMount(false);
       return;
     }
+    if (!rankedWarPage) removeInlineMemberTools();
     const mountState = resolvePanelMount(view);
     const mount = mountState.mount;
     if (!mount) {
@@ -3003,6 +3031,8 @@
     }
     if (panel.parentNode !== mount) mount.appendChild(panel);
     const rosterMode = mountState.placement === "inline" && isRosterModePage();
+    const floatingMode = mountState.placement === "floating";
+    panel.classList.toggle("wc-floating", floatingMode);
     panel.classList.toggle("wc-integrated-inline", mountState.placement === "inline");
     panel.classList.toggle("wc-integrated-toolbar", mountState.placement === "toolbar");
     panel.classList.toggle("wc-integrated-fallback", mountState.fallback);
@@ -3051,6 +3081,7 @@
       const title = `${faction || side}: ${chain.label}${syncing ? ". Waiting for the next backend score sample." : ""}`;
       return `<span class="${className} ${escapeHtml(chain.tone)}" title="${escapeHtml(title)}"><span class="wc-chain-side">${side}</span>${escapeHtml(chain.compact)}</span>`;
     }).join("");
+    const standardChainMarkup = chainMarkup("wc-chain");
     const rosterChainMarkup = chainMarkup("wc-roster-chain");
     const actionableMemberIds = new Set([
       ...(view.actions || []).map((action) => Number(action?.memberId || 0)),
@@ -3062,7 +3093,7 @@
       ["actionable", "Queue"],
       ["retaliations", "Retals"],
     ].map(([value, label]) => `<button type="button" class="wc-roster-filter${state.rosterFilter === value ? " active" : ""}" data-roster-filter="${value}" aria-pressed="${state.rosterFilter === value ? "true" : "false"}">${label}</button>`).join("");
-    const rosterControls = rosterMode
+    const rosterControls = rankedWarPage
       ? `<div class="wc-roster-controls"><div class="wc-roster-filters" role="group" aria-label="Filter enemy roster">${rosterFilterOptions}</div><label class="wc-roster-sort" title="Prioritize Retals, Dibs, watched targets, and useful availability states."><input type="checkbox" data-field="roster-priority-sort"${state.rosterPrioritySort ? " checked" : ""}>Warbuddy priority</label></div>`
       : "";
 
@@ -3098,8 +3129,12 @@
       ["attackable", "Attackable now"],
       ["retaliation", "Retaliation"],
     ].map(([kind, label]) => `<label class="wc-option"><input type="checkbox" data-notification-kind="${kind}"${state.notificationSettings[kind] ? " checked" : ""}${notificationSupported ? "" : " disabled"}>${label}</label>`).join("");
+    const displayModeOptions = [
+      ["native", "Native (default)"],
+      ["floating", "Floating"],
+    ].map(([value, label]) => `<button type="button" class="wc-display-mode${state.displayMode === value ? " active" : ""}" data-display-mode="${value}" aria-pressed="${state.displayMode === value ? "true" : "false"}">${label}</button>`).join("");
     const optionsSection = savedKey
-      ? `<details data-section="options"${state.optionsOpen ? " open" : ""}><summary>Options</summary><div class="wc-options">${notificationOptions}</div>${notificationSupported ? "" : `<div class="wc-privacy">Desktop notifications are not available in this userscript host.</div>`}</details>`
+      ? `<details data-section="options"${state.optionsOpen ? " open" : ""}><summary>Options</summary><div class="wc-display-setting"><div class="wc-display-label">Layout</div><div class="wc-display-modes" role="group" aria-label="Warbuddy layout">${displayModeOptions}</div></div><div class="wc-options">${notificationOptions}</div>${notificationSupported ? "" : `<div class="wc-privacy">Desktop notifications are not available in this userscript host.</div>`}</details>`
       : "";
 
     const showKeyEditor = !savedKey || state.keyEditorOpen || state.authTerminal;
@@ -3118,8 +3153,12 @@
       ${optionsSection}
       <details data-section="privacy"${state.privacyOpen ? " open" : ""}><summary>Privacy</summary><div class="wc-privacy">The key stays in your userscript storage. Torn and the backend use it to verify your profile and faction. Warbuddy records your version, connection mode, and last use for faction admins. Its scoped session can save only your watched-target list and Dibs actions.</div>${savedKey ? `<div class="wc-private-actions"><button class="wc-button" data-action="refresh"${mutationBusy || state.keySaving ? " disabled" : ""}>Reconnect</button><button class="wc-button" data-action="change-key"${mutationBusy || state.keySaving ? " disabled" : ""}>Change key</button><button class="wc-button" data-action="forget"${mutationBusy || state.keySaving ? " disabled" : ""}>${state.forgetConfirm ? "Confirm forget" : "Forget key"}</button></div>` : ""}</details>
     `;
+    const standardHeader = `<div class="wc-header">
+      <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel || standardChainMarkup ? `<div class="wc-context">${matchupLabel ? `<span class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}${standardChainMarkup ? `<span class="wc-chains">${standardChainMarkup}</span>` : ""}</div>` : ""}</div>
+      <button type="button" class="wc-button wc-icon" data-display-mode="native" aria-label="Use native layout" title="Close floating panel and use the native layout">&times;</button>
+    </div>`;
     const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts">${rosterChainMarkup ? `<span class="wc-roster-chains">${rosterChainMarkup}</span>` : ""}<span class="wc-roster-watched">Watched ${savedTargetIds().length}</span><span>Queue ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
-    const panelMarkup = `${rosterHeader}<div class="wc-body">${panelBody}</div>`;
+    const panelMarkup = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
     if (panelMarkupCache.get(panel) === panelMarkup && panel.querySelector(".wc-body")) {
       syncIntegratedMemberTools(view);
       positionOpenDibsTip(document);
@@ -3176,6 +3215,9 @@
       storage.set(ROSTER_SORT_STORAGE, state.rosterPrioritySort ? "1" : "0");
       syncIntegratedMemberTools(view);
       scheduleRender();
+    });
+    panel.querySelectorAll("[data-display-mode]").forEach((button) => {
+      button.addEventListener("click", (event) => setDisplayMode(event.currentTarget?.dataset?.displayMode));
     });
     panel.querySelector('[data-action="toggle-focus"]')?.addEventListener("click", () => {
       state.focusMode = !state.focusMode;
@@ -3397,6 +3439,7 @@
 
   function activeSurfaceMissing(view = sessionView()) {
     if (!state.active) return false;
+    const floatingPanelMissing = state.displayMode === "floating" && !document.getElementById(PANEL_ID);
     if (targetPageMemberId()) {
       const context = document.getElementById(TARGET_CONTEXT_ID);
       const mountPoint = targetContextMountPoint();
@@ -3404,9 +3447,10 @@
         || !mountPoint?.parent
         || context.parentNode !== mountPoint.parent
         || Number(context.dataset?.memberId || 0) !== targetPageMemberId()
-        || !context.querySelector?.(".wc-native-brand");
+        || !context.querySelector?.(".wc-native-brand")
+        || floatingPanelMissing;
     }
-    if (!core.isRankedWarPageUrl(window.location.href)) return false;
+    if (!core.isRankedWarPageUrl(window.location.href)) return floatingPanelMissing;
     if (!document.getElementById(PANEL_ID)) return true;
     const anchors = enemyProfileAnchors(view);
     return anchors.some((anchor) => {
@@ -3507,12 +3551,15 @@
       return;
     }
     if (!targetPageMemberId() && !core.isRankedWarPageUrl(window.location.href)) {
-      window.alert("Warbuddy tools are shown on Torn profiles, attack pages, and the ranked-war roster.");
+      setDisplayMode("floating");
       return;
     }
     render();
     syncForegroundState();
   });
+
+  registerMenuCommand("Warbuddy: use native layout", () => setDisplayMode("native"));
+  registerMenuCommand("Warbuddy: use floating panel", () => setDisplayMode("floating"));
 
   registerMenuCommand("Warbuddy: diagnostics", () => {
     const routeMatches = core.isWarbuddyPageUrl(window.location.href);
@@ -3539,7 +3586,8 @@
       `Panel mounted: ${panel ? "yes" : "no"}`,
       `Panel visible: ${panel ? getComputedStyle(panel).display !== "none" && getComputedStyle(panel).visibility !== "hidden" : "n/a"}`,
       `Native target context: ${targetContext ? "mounted" : "not mounted"}`,
-      `Effective surface: ${targetPageMemberId() ? "native target context" : isRosterModePage() ? "ranked-war roster" : "none"}`,
+      `Layout: ${state.displayMode}`,
+      `Effective surface: ${state.displayMode === "floating" ? "floating panel with native indicators" : targetPageMemberId() ? "native target context" : isRosterModePage() ? "ranked-war roster" : "none"}`,
       `Phase: ${state.phase}`,
       `Page visibility: ${document.visibilityState}`,
       `Browser online: ${typeof navigator === "undefined" || navigator.onLine !== false ? "yes" : "no"}`,
@@ -3634,6 +3682,7 @@
     state.pageObserver = null;
     state.observedBody = null;
     stopAttackOutcomeDetection();
+    document.getElementById(PANEL_ID)?.remove();
     removeTargetContext();
     removeInlineMemberTools();
     removeIntegratedMount(false);

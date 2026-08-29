@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.50
+
+- Keeps the native profile, attack, and ranked-war roster presentation as the default.
+- Restores the full floating tools panel as an explicit opt-in from the native target context, Warbuddy Options, or the userscript menu.
+- Keeps Retaliation and Dibs state in Torn's native target and roster DOM even while the floating panel is enabled.
+- Reuses the existing shared live session when switching layouts, with no additional connection, request, polling, or event delay.
+
 ## 0.1.49
 
 - Embeds a compact Warbuddy target context directly in Torn profile and attack pages instead of opening a floating panel.
@@ -81,7 +88,7 @@
 - Applies filtering and ordering with reversible CSS only; Torn's member rows are never moved or rewritten.
 - Falls back to the proven floating panel when Torn does not expose a safe integration point.
 
-> Historical note: versions before 0.1.49 used the floating and roster display modes described above. Version 0.1.49 replaces them with native target contexts and the ranked-war strip.
+> Historical note: version 0.1.49 replaced these older modes with native target contexts and the ranked-war strip. Version 0.1.50 later restored floating tools as an optional, non-default layout.
 
 Warbuddy is a Torn userscript that places the live war action queue, shared Dibs, and retaliation opportunities supplied by the Grusmedia backend into Torn's relevant native page surfaces.
 
@@ -103,10 +110,15 @@ The install URL ends in `.user.js` and includes update metadata, so supported us
 - A compact shared Dibs marker for same-location attackable enemies and enemies leaving hospital within five minutes.
 - Active retaliation windows with explicit links to Torn.
 - A compact target context inside Torn profile and attack pages, with status, Watch/Unwatch, Dibs, retaliation, and known loadout details when available.
-- One full inline control strip above the ranked-war roster, with independent Retal and Dibs state/actions beside each recognized enemy row's native Attack action.
+- One full inline control strip above the ranked-war roster by default, with independent Retal and Dibs state/actions beside each recognized enemy row's native Attack action.
+- An optional floating full-tools panel; native target and roster indicators remain visible while it is enabled.
 - A stable empty state when there are no immediate actions.
 
 Warbuddy displays information and links only. It never attacks, clicks, submits Torn actions, or notifies automatically. **Dibs** is an explicit coordination button that updates only the Grusmedia backend.
+
+## Layout
+
+**Native (default)** embeds the target context into profile and attack pages and places the full tools in the ranked-war strip. **Floating** opens the full tools as a fixed panel while retaining native Retaliation and Dibs indicators. Switch from the target context, **Options → Layout**, or the userscript menu. The preference is stored locally and switching layouts reuses the current live session.
 
 ## Access And Privacy
 

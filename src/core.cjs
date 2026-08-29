@@ -49,7 +49,7 @@
     `https://www.torn.com/page.php?sid=attack&user2ID=${encodeURIComponent(String(memberId || ""))}`;
 
   const normalizeDisplayMode = (value) =>
-    String(value || "").trim().toLowerCase() === "integrated" ? "integrated" : "floating";
+    String(value || "").trim().toLowerCase() === "floating" ? "floating" : "native";
 
   const normalizeRosterFilter = (value) => {
     const normalized = String(value || "").trim().toLowerCase();

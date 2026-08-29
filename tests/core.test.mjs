@@ -979,6 +979,7 @@ describe("Warbuddy panel state", () => {
   it("keeps live state and named factions compact in the ranked-war strip", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+    const rosterHeaderSource = compactSource(sourceSection(source, "const rosterHeader =", "const panelMarkup ="));
 
     assert.match(renderSource, /const rosterHeader = `<div class="wc-roster-summary">/);
     assert.match(renderSource, /class="wc-roster-status"/);
@@ -989,7 +990,7 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes("ownFactionName"));
     assert.ok(source.includes("enemyFactionName"));
     assert.ok(source.includes("factionNames: new Map()"));
-    assert.doesNotMatch(renderSource, /wc-header-status|wc-matchup|wc-chains/);
+    assert.doesNotMatch(rosterHeaderSource, /wc-header-status|wc-matchup|wc-chains/);
   });
 
   it("keeps recovery controls inside Privacy instead of the live panel", async () => {
@@ -1142,15 +1143,24 @@ describe("Warbuddy panel state", () => {
     assert.equal(page.intervalCount(), 1, "only the faction-route watcher should be running");
   });
 
-  it("keeps obsolete floating, collapse, and drag settings out of runtime state", async () => {
+  it("persists only the opt-in layout while keeping collapse, drag, and position obsolete", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const modeSource = compactSource(sourceSection(source, "function setDisplayMode", "async function getProfileWithKey"));
 
     assert.ok(source.includes('[KEY_STORAGE]: "lads_war_companion_api_key"'));
     assert.ok(source.includes('storage.set(key, legacyValue)'));
-    assert.doesNotMatch(source, /const (?:POSITION|DISPLAY_MODE|COLLAPSED)_STORAGE/);
-    assert.doesNotMatch(source, /state\.(?:displayMode|collapsed|dragging)/);
-    assert.doesNotMatch(source, /function (?:setDisplayMode|setPanelPosition|attachPanelDragHandler)/);
-    assert.doesNotMatch(source, /data-display-mode|Warbuddy: reset position|Warbuddy: use floating mode/);
+    assert.equal(core.normalizeDisplayMode(undefined), "native");
+    assert.equal(core.normalizeDisplayMode("unexpected"), "native");
+    assert.equal(core.normalizeDisplayMode("integrated"), "native", "the old integrated value migrates to the native default");
+    assert.equal(core.normalizeDisplayMode("native"), "native");
+    assert.equal(core.normalizeDisplayMode("FLOATING"), "floating");
+    assert.ok(source.includes('const DISPLAY_MODE_STORAGE = "warbuddy_display_mode"'));
+    assert.match(source, /displayMode: core\.normalizeDisplayMode\(storage\.get\(DISPLAY_MODE_STORAGE, ""\)\)/);
+    assert.match(modeSource, /storage\.set\(DISPLAY_MODE_STORAGE, nextMode\)/);
+    assert.doesNotMatch(source, /const (?:POSITION|COLLAPSED)_STORAGE/);
+    assert.doesNotMatch(source, /state\.(?:collapsed|dragging)/);
+    assert.doesNotMatch(source, /function (?:setPanelPosition|attachPanelDragHandler|resetPanelPosition)/);
+    assert.doesNotMatch(source, /data-action="collapse"|Warbuddy: reset position/);
   });
 
   it("migrates existing local settings to faction-neutral storage keys", async () => {
@@ -1212,11 +1222,13 @@ describe("Warbuddy panel state", () => {
     assert.doesNotMatch(source, /socketClosing/);
   });
 
-  it("keeps supported visible surfaces live without a collapse-state gate", async () => {
+  it("keeps native surfaces and opted-in floating pages live without a collapse-state gate", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const statusSource = compactSource(sourceSection(source, "const statusView", "function dibsMarkup"));
+    const surfaceSource = compactSource(sourceSection(source, "const isRosterModePage", "const backendUrl"));
 
     assert.ok(source.includes("const isForeground = () => state.active\n    && hasWarbuddySurface()\n    && document.visibilityState !== \"hidden\""));
+    assert.match(surfaceSource, /const hasWarbuddySurface = \(\) => !!targetPageMemberId\(\) \|\| isRosterModePage\(\) \|\| state\.displayMode === "floating"/);
     assert.doesNotMatch(source, /state\.collapsed|COLLAPSED_STORAGE/);
     assert.doesNotMatch(statusSource, /collapsed|Expand and resume|Collapse and pause/);
     assert.match(statusSource, /if \(document\.visibilityState === "hidden"\) return \{ label: "Paused while hidden", tone: "" \}/);
@@ -1224,21 +1236,35 @@ describe("Warbuddy panel state", () => {
 });
 
 describe("Warbuddy userscript source contracts", () => {
-  it("mounts the full controls only as a ranked-war inline strip", async () => {
+  it("uses native surfaces by default and mounts the full controls as floating only when opted in", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const modeSource = compactSource(sourceSection(source, "function setDisplayMode", "async function getProfileWithKey"));
     const mountSource = compactSource(sourceSection(source, "function resolvePanelMount", "async function getProfileWithKey"));
     const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
 
+    assert.equal(core.normalizeDisplayMode(undefined), "native");
+    assert.equal(core.normalizeDisplayMode("floating"), "floating");
+    assert.match(source, /displayMode: core\.normalizeDisplayMode\(storage\.get\(DISPLAY_MODE_STORAGE, ""\)\)/);
+    assert.match(modeSource, /const nextMode = core\.normalizeDisplayMode\(value\)/);
+    assert.match(modeSource, /storage\.set\(DISPLAY_MODE_STORAGE, nextMode\)/);
+    assert.match(modeSource, /removeIntegratedMount\(true\).*scheduleRender\(\).*syncForegroundState\(\)/);
+    assert.doesNotMatch(modeSource, /new WebSocket|connectSocket|startFallbackPolling|setInterval|requestJson/);
+    assert.match(mountSource, /if \(state\.displayMode === "floating"\) \{ removeIntegratedMount\(true\); return \{ mount: document\.body, placement: "floating", fallback: false \}/);
     assert.match(mountSource, /const desiredPlacement = core\.isRankedWarPageUrl\(window\.location\.href\) \? "rank" : ""/);
     assert.match(mountSource, /createRankedWarHost\(view\)/);
     assert.match(mountSource, /placement: "inline", fallback: false/);
     assert.match(mountSource, /return \{ mount: null, placement: "none", fallback: false \}/);
     assert.match(inlineSource, /core\.isRankedWarPageUrl\(window\.location\.href\)/);
-    assert.doesNotMatch(inlineSource, /state\.displayMode/);
-    assert.match(renderSource, /if \(targetPageMemberId\(\)\) \{ syncTargetPageContext\(view\); document\.getElementById\(PANEL_ID\)\?\.remove\(\); removeInlineMemberTools\(\); removeIntegratedMount\(false\); return/);
-    assert.match(renderSource, /if \(!core\.isRankedWarPageUrl\(window\.location\.href\)\) \{ document\.getElementById\(PANEL_ID\)\?\.remove\(\); removeInlineMemberTools\(\); removeIntegratedMount\(false\); return/);
-    assert.doesNotMatch(source, /DISPLAY_MODE_STORAGE|data-display-mode|function setDisplayMode/);
+    assert.doesNotMatch(inlineSource, /state\.displayMode/, "ranked-row Retal and Dibs indicators stay native in both layouts");
+    assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
+    assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\)/);
+    assert.match(renderSource, /if \(state\.displayMode !== "floating" && targetPage\)/);
+    assert.match(renderSource, /if \(state\.displayMode !== "floating" && !rankedWarPage\)/);
+    assert.match(renderSource, /const panelMarkup = `\$\{rosterMode \? rosterHeader : standardHeader\}<div class="wc-body">\$\{panelBody\}<\/div>`/);
+    assert.match(renderSource, /\[ \["native", "Native \(default\)"\], \["floating", "Floating"\], \]/);
+    assert.match(source, /registerMenuCommand\("Warbuddy: use native layout", \(\) => setDisplayMode\("native"\)\)/);
+    assert.match(source, /registerMenuCommand\("Warbuddy: use floating panel", \(\) => setDisplayMode\("floating"\)\)/);
   });
 
   it("matches only ranked-war enemy profile links for integrated row actions", () => {
@@ -1257,11 +1283,12 @@ describe("Warbuddy userscript source contracts", () => {
     const observerSource = compactSource(sourceSection(source, "function startPageObserver", "function pollPageActivation"));
     const heartbeatSource = compactSource(sourceSection(source, "function pollPageActivation", "function syncPageActivation"));
 
+    assert.match(missingSource, /const floatingPanelMissing = state\.displayMode === "floating" && !document\.getElementById\(PANEL_ID\)/);
     assert.match(missingSource, /if \(targetPageMemberId\(\)\) \{ const context = document\.getElementById\(TARGET_CONTEXT_ID\); const mountPoint = targetContextMountPoint\(\)/);
     assert.match(missingSource, /!context \|\| !mountPoint\?\.parent \|\| context\.parentNode !== mountPoint\.parent/);
     assert.match(missingSource, /Number\(context\.dataset\?\.memberId \|\| 0\) !== targetPageMemberId\(\)/);
-    assert.match(missingSource, /!context\.querySelector\?\.\("\.wc-native-brand"\)/);
-    assert.match(missingSource, /if \(!core\.isRankedWarPageUrl\(window\.location\.href\)\) return false/);
+    assert.match(missingSource, /!context\.querySelector\?\.\("\.wc-native-brand"\) \|\| floatingPanelMissing/);
+    assert.match(missingSource, /if \(!core\.isRankedWarPageUrl\(window\.location\.href\)\) return floatingPanelMissing/);
     assert.match(missingSource, /if \(!document\.getElementById\(PANEL_ID\)\) return true/);
     assert.match(missingSource, /return !tools \|\| !rosterActions/);
     assert.match(observerSource, /if \(activeSurfaceMissing\(\)\) scheduleRender\(\)/);
@@ -1411,10 +1438,16 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(contextSource, /dibsMarkup\(targetRecord, view, claim, `target-\$\{memberId\}`\)/);
     assert.match(contextSource, /data-action="toggle-watch"/);
     assert.match(contextSource, /data-target-member="\$\{memberId\}"/);
+    assert.match(contextSource, /data-action="set-display-mode"/);
+    assert.match(contextSource, /data-display-mode="floating"/);
+    assert.match(contextSource, /data-display-mode="native"/);
+    assert.match(contextSource, /const showKeyEditor = state\.displayMode !== "floating"/, "floating mode keeps a single API-key editor in the full panel");
     assert.match(syncContextSource, /context\.id = TARGET_CONTEXT_ID/);
     assert.match(syncContextSource, /context\.addEventListener\("click", handleTargetContextAction\)/);
     assert.match(syncContextSource, /mountPoint\.parent\.insertBefore\(context, mountPoint\.before \|\| null\)/);
-    assert.match(renderSource, /if \(targetPageMemberId\(\)\) \{ syncTargetPageContext\(view\); document\.getElementById\(PANEL_ID\)\?\.remove\(\); removeInlineMemberTools\(\); removeIntegratedMount\(false\); return/);
+    assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
+    assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\); else removeTargetContext\(\)/);
+    assert.match(renderSource, /if \(state\.displayMode !== "floating" && targetPage\)/);
     assert.doesNotMatch(source, /function attackTargetMarkup|Current Torn target/);
   });
 
@@ -1577,7 +1610,7 @@ describe("Warbuddy route activation", () => {
     assert.equal(core.isWarbuddyPageUrl("https://example.com/factions.php#/war/rank"), false);
   });
 
-  it("does not mount the full panel on generic faction, profile, attack, or unrelated pages", async () => {
+  it("does not mount the full panel by default on generic faction, profile, attack, or unrelated pages", async () => {
     const faction = await bootUserscript("https://www.torn.com/factions.php?step=your&type=1", { withBody: false });
     assert.equal(faction.elements.has("warbuddy-panel"), false);
 
@@ -1602,6 +1635,33 @@ describe("Warbuddy route activation", () => {
 
     const stocks = await bootUserscript("https://www.torn.com/page.php?sid=stocks");
     assert.equal(stocks.elements.has("warbuddy-panel"), false);
+  });
+
+  it("mounts and persists one opt-in floating panel on supported faction and target pages", async () => {
+    for (const href of [
+      "https://www.torn.com/factions.php?step=your&type=1",
+      "https://www.torn.com/factions.php?step=your&type=1#/war/rank",
+      "https://www.torn.com/page.php?sid=attack&user2ID=123",
+      "https://www.torn.com/profiles.php?XID=123",
+    ]) {
+      const page = await bootUserscript(href, {
+        visibilityState: "visible",
+        storedValues: { warbuddy_display_mode: "floating" },
+      });
+
+      assert.equal(page.elements.has("warbuddy-panel"), true, href);
+      assert.equal(page.storageValues.get("warbuddy_display_mode"), "floating");
+      assert.equal(page.menuCommands.has("Warbuddy: use native layout"), true);
+      assert.equal(page.menuCommands.has("Warbuddy: use floating panel"), true);
+
+      page.menuCommands.get("Warbuddy: use native layout")();
+      assert.equal(page.elements.has("warbuddy-panel"), false, `${href} after switching native`);
+      assert.equal(page.storageValues.get("warbuddy_display_mode"), "native");
+
+      page.menuCommands.get("Warbuddy: use floating panel")();
+      assert.equal(page.elements.has("warbuddy-panel"), true, `${href} after switching floating`);
+      assert.equal(page.storageValues.get("warbuddy_display_mode"), "floating");
+    }
   });
 
   it("injects only on Torn faction and page routes, with exact runtime activation", async () => {
