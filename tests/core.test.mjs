@@ -1296,28 +1296,131 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(heartbeatSource, /href !== state\.lastPageHref \|\| activeSurfaceMissing\(\)/);
   });
 
-  it("mounts the ranked-war strip above the common two-faction board instead of a member cell", async () => {
+  it("keeps the ranked-war strip provisional until a verified common board can be mounted safely", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const rowSource = compactSource(sourceSection(
       source,
       "function lowestCommonAncestor",
       "function resolvePanelMount"
     ));
+    const mountSource = compactSource(sourceSection(source, "function resolvePanelMount", "async function getProfileWithKey"));
     const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
 
+    assert.match(source, /const SAFE_INTEGRATED_PARENT_DISPLAYS = new Set\(\["block", "flow-root", "list-item"\]\)/);
     assert.match(rowSource, /function rankedWarBoardForView\(view\)/);
     assert.match(rowSource, /lowestCommonAncestor\(ownRow, enemyRow\)/);
     assert.match(rowSource, /board\.contains\?\.\(ownRow\)/);
     assert.match(rowSource, /board\.contains\?\.\(enemyRow\)/);
+    assert.match(rowSource, /if \(best\) return best; return null/);
+    assert.doesNotMatch(rowSource, /const domRows/);
+    assert.match(rowSource, /const ownAnchors = rosterProfileAnchors\(view\?\.ownRoster\)\.slice\(0, 16\)/);
+    assert.match(rowSource, /const enemyAnchors = enemyProfileAnchors\(view\)\.slice\(0, 8\)/);
+    assert.match(rowSource, /if \(checkedBoards\.has\(board\)\) continue; checkedBoards\.add\(board\)/);
+    assert.match(rowSource, /function markRankedWarBoard\(board\)/);
+    assert.match(rowSource, /board && markedBoards\.length === 1 && markedBoards\[0\] === board/);
     assert.match(rowSource, /board\.dataset\.warbuddyRosterBoard = "1"/);
-    assert.match(rowSource, /parent\.insertBefore\(wrapper, board \|\| parent\.firstChild \|\| null\)/);
-    assert.doesNotMatch(rowSource, /parent\.insertBefore\(wrapper, row\)/);
-    assert.match(styleSource, /grid-column:1 \/ -1 !important/);
-    assert.match(styleSource, /flex:0 0 100%/);
+    assert.match(rowSource, /function rankedWarSafeMountPoint\(parent, before, wrapper = null\)/);
+    assert.match(rowSource, /SAFE_INTEGRATED_PARENT_DISPLAYS\.has\(display\)/);
+    assert.match(rowSource, /mountBefore = mountParent; mountParent = mountParent\.parentElement/);
+    assert.match(rowSource, /function rankedWarMountPoint\(board, wrapper = null\)/);
+    assert.match(rowSource, /const mainContainer = document\.querySelector\?\.\("#mainContainer"\)/);
+    assert.match(rowSource, /return rankedWarSafeMountPoint\(board\.parentElement, board, wrapper\)/);
+    assert.match(rowSource, /return rankedWarSafeMountPoint\(mainContainer, mainContainer\.firstChild, wrapper\)/);
+    assert.match(rowSource, /wrapper\.dataset\.warbuddyBoardVerified = board \? "1" : "0"/);
+    assert.match(rowSource, /const mountPoint = rankedWarMountPoint\(board\)/);
+    assert.match(rowSource, /mountPoint\.parent\.insertBefore\(wrapper, mountPoint\.before\)/);
+    assert.doesNotMatch(rowSource, /\.insertBefore\(wrapper, (?:board|row)\b/);
+
+    assert.match(mountSource, /const wrapper = document\.getElementById\(INTEGRATED_WRAPPER_ID\); const board = rankedWarBoardForView\(view\); markRankedWarBoard\(board\)/);
+    assert.match(mountSource, /const boardVerified = board \? "1" : "0"; if \(wrapper && wrapper\.dataset\.warbuddyBoardVerified !== boardVerified\) \{ wrapper\.dataset\.warbuddyBoardVerified = boardVerified/);
+    assert.match(mountSource, /const mountPoint = rankedWarMountPoint\(board, wrapper\)/);
+    assert.match(mountSource, /wrapper\.parentNode !== mountPoint\.parent \|\| wrapper\.nextSibling !== mountPoint\.before/);
+    assert.match(mountSource, /mountPoint\.parent\.insertBefore\(wrapper, mountPoint\.before\)/);
+    assert.doesNotMatch(mountSource, /markedBoard|verifiedMount/);
+
+    assert.match(styleSource, /box-sizing:border-box; width:100%; min-width:0; max-width:100%/);
+    assert.doesNotMatch(styleSource, /grid-column:1 \/ -1 !important/);
+    assert.doesNotMatch(styleSource, /flex:0 0 100%/);
     assert.match(styleSource, /wc-roster-mode/);
     assert.match(styleSource, /width:100%; max-width:none/);
     assert.match(styleSource, /wc-roster-mode \.wc-body \{ max-height:none; overflow:visible; overscroll-behavior:auto/);
     assert.match(styleSource, /\.wc-target-list \{ max-height:180px; overflow:auto/);
+  });
+
+  it("lifts ranked-war mounts out of Torn's internal roster layout", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const safeDisplaysSource = sourceSection(
+      source,
+      "const SAFE_INTEGRATED_PARENT_DISPLAYS",
+      "const STATUS_CELL_CLASS"
+    );
+    const mountPointSource = sourceSection(
+      source,
+      "function rankedWarSafeMountPoint",
+      "function createRankedWarHost"
+    );
+    const resolveMountPoint = ({ mainContainer, board, wrapper = null }) => {
+      const context = {
+        board,
+        wrapper,
+        mountPoint: null,
+        document: {
+          body: null,
+          documentElement: null,
+          querySelector(selector) {
+            return selector === "#mainContainer" ? mainContainer : null;
+          },
+        },
+        getComputedStyle(element) {
+          return { display: element.display || "block" };
+        },
+      };
+      runInNewContext(`${safeDisplaysSource}\n${mountPointSource}\nmountPoint = rankedWarMountPoint(board, wrapper);`, context);
+      return context.mountPoint;
+    };
+
+    const pageShell = { display: "block", firstChild: null, parentElement: null };
+    const mainContainer = { display: "block", firstChild: null, parentElement: pageShell };
+    const pageSection = { display: "block", parentElement: mainContainer };
+    const rosterGrid = { display: "grid", parentElement: pageSection };
+    const commonBoard = { parentElement: rosterGrid };
+    pageShell.firstChild = mainContainer;
+    mainContainer.firstChild = pageSection;
+
+    const verified = resolveMountPoint({ mainContainer, board: commonBoard });
+    assert.equal(verified.parent, pageSection);
+    assert.equal(verified.before, rosterGrid);
+
+    const wrapper = { parentElement: mainContainer, nextSibling: pageSection };
+    mainContainer.firstChild = wrapper;
+    const provisional = resolveMountPoint({ mainContainer, board: null, wrapper });
+    assert.equal(provisional.parent, mainContainer);
+    assert.equal(provisional.before, pageSection);
+
+    mainContainer.display = "flex";
+    const flexSafe = resolveMountPoint({ mainContainer, board: null, wrapper });
+    assert.equal(flexSafe.parent, pageShell);
+    assert.equal(flexSafe.before, mainContainer);
+
+    mainContainer.display = "grid";
+    const boardIsMain = resolveMountPoint({ mainContainer, board: mainContainer, wrapper });
+    assert.equal(boardIsMain.parent, pageShell);
+    assert.equal(boardIsMain.before, mainContainer);
+  });
+
+  it("revalidates native ranked-war placement when the responsive layout changes", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const listenerSource = compactSource(sourceSection(
+      source,
+      "window.addEventListener(\"focus\"",
+      "window.addEventListener(\"hashchange\""
+    ));
+
+    assert.match(listenerSource, /const handleViewportResize = \(\) => \{/);
+    assert.match(listenerSource, /positionOpenDibsTip\(document\)/);
+    assert.match(listenerSource, /state\.displayMode !== "floating" && core\.isRankedWarPageUrl\(window\.location\.href\)\) scheduleRender\(\)/);
+    assert.match(listenerSource, /window\.addEventListener\("resize", handleViewportResize\)/);
+    assert.match(listenerSource, /window\.visualViewport\?\.addEventListener\?\.\("resize", handleViewportResize\)/);
   });
 
   it("keeps roster filtering reversible while showing independent Retal and Dibs actions", async () => {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.50
+// @version      0.1.51
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -1430,7 +1430,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.50";
+  const SCRIPT_VERSION = "0.1.51";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -1446,6 +1446,7 @@
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
   const ROSTER_ACTIONS_CLASS = "warbuddy-roster-actions";
   const TARGET_CONTEXT_ID = "warbuddy-target-context";
+  const SAFE_INTEGRATED_PARENT_DISPLAYS = new Set(["block", "flow-root", "list-item"]);
   const STATUS_CELL_CLASS = "warbuddy-status-cell";
   const STATUS_DETAIL_CLASS = "warbuddy-status-detail";
   const STATUS_MISMATCH_CLASS = "warbuddy-status-mismatch";
@@ -1655,7 +1656,7 @@
 
   addStyle(`
     #${PANEL_ID} { display:block !important; visibility:visible !important; opacity:1 !important; position:fixed !important; right:10px; right:max(10px,env(safe-area-inset-right)); bottom:10px; bottom:max(10px,env(safe-area-inset-bottom)); z-index:2147483647 !important; width:min(320px,calc(100vw - 20px)); max-height:min(70vh,620px); max-height:min(70dvh,620px); overflow:hidden; border:1px solid #3f3f46; border-radius:7px; background:#111113; color:#f4f4f5; box-shadow:0 12px 32px rgba(0,0,0,.55); font:12px/1.35 Arial,Helvetica,sans-serif; }
-    #${INTEGRATED_WRAPPER_ID} { position:relative; z-index:1; display:block; width:100%; min-width:0; max-width:100%; flex:0 0 100%; grid-column:1 / -1 !important; clear:both; align-self:stretch; margin:7px 0; list-style:none; }
+    #${INTEGRATED_WRAPPER_ID} { position:relative; z-index:1; display:block; box-sizing:border-box; width:100%; min-width:0; max-width:100%; margin:7px 0; list-style:none; }
     #${INTEGRATED_HOST_ID} { position:relative; z-index:1; display:block; width:100%; min-width:0; max-width:100%; font:12px/1.35 Arial,Helvetica,sans-serif; }
     #${INTEGRATED_HOST_ID}.wc-rank-host { box-sizing:border-box; }
     #${INTEGRATED_HOST_ID}.wc-attack-host { display:inline-flex; width:auto; margin-left:8px; vertical-align:middle; }
@@ -2355,12 +2356,15 @@
   function rankedWarBoardForView(view) {
     const expectedMembers = Number(view?.ownRoster?.length || 0) + Number(view?.enemyRoster?.length || 0);
     const invalidParents = new Set(["TABLE", "TBODY", "THEAD", "TFOOT", "TR"]);
+    const ownAnchors = rosterProfileAnchors(view?.ownRoster).slice(0, 16);
+    const enemyAnchors = enemyProfileAnchors(view).slice(0, 8);
+    const checkedBoards = new Set();
     let best = null;
     let bestProfileCount = Number.POSITIVE_INFINITY;
-    for (const ownAnchor of rosterProfileAnchors(view?.ownRoster).slice(0, 16)) {
+    for (const ownAnchor of ownAnchors) {
       const ownRow = rankedWarOwnRowForAnchor(ownAnchor);
       if (!ownRow) continue;
-      for (const enemyAnchor of enemyProfileAnchors(view).slice(0, 8)) {
+      for (const enemyAnchor of enemyAnchors) {
         const enemyRow = rankedWarRowForAnchor(enemyAnchor) || rankedWarOwnRowForAnchor(enemyAnchor);
         let board = lowestCommonAncestor(ownRow, enemyRow);
         if (!board || board === document.body || board === document.documentElement) continue;
@@ -2369,6 +2373,8 @@
         }
         if (!board?.parentElement || board === document.body || board === document.documentElement) continue;
         if (!board.contains?.(ownRow) || !board.contains?.(enemyRow)) continue;
+        if (checkedBoards.has(board)) continue;
+        checkedBoards.add(board);
         const profileCount = Array.from(board.querySelectorAll?.("a[href*='profiles.php']") || [])
           .filter((anchor) => core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "") > 0)
           .length;
@@ -2380,44 +2386,65 @@
       }
     }
     if (best) return best;
+    return null;
+  }
 
-    const domRows = Array.from(document.querySelectorAll?.("a[href*='profiles.php']") || [])
-      .filter((anchor) => !anchor.closest?.(`#${PANEL_ID}, #${INTEGRATED_HOST_ID}, #${TARGET_CONTEXT_ID}`))
-      .map((anchor) => rankedWarRowForAnchor(anchor))
-      .filter((row, index, rows) => row && rows.indexOf(row) === index);
-    if (!domRows.length) return null;
-    let board = domRows.length > 1
-      ? lowestCommonAncestor(domRows[0], domRows[domRows.length - 1])
-      : domRows[0];
-    if (!board || board === document.body || board === document.documentElement) return null;
-    while (board?.parentElement && invalidParents.has(String(board.parentElement.tagName || "").toUpperCase())) {
-      board = board.parentElement;
+  function markRankedWarBoard(board) {
+    const markedBoards = Array.from(document.querySelectorAll?.("[data-warbuddy-roster-board]") || []);
+    if ((board && markedBoards.length === 1 && markedBoards[0] === board) || (!board && markedBoards.length === 0)) return;
+    markedBoards.forEach((candidate) => {
+      delete candidate.dataset.warbuddyRosterBoard;
+    });
+    if (board) board.dataset.warbuddyRosterBoard = "1";
+  }
+
+  function rankedWarSafeMountPoint(parent, before, wrapper = null) {
+    let mountParent = parent;
+    let mountBefore = before;
+    for (let depth = 0; mountParent && depth < 12; depth += 1) {
+      const atDocumentBoundary = mountParent === document.body || mountParent === document.documentElement;
+      const display = atDocumentBoundary || typeof getComputedStyle !== "function"
+        ? "block"
+        : String(getComputedStyle(mountParent)?.display || "").toLowerCase();
+      if (atDocumentBoundary || !display || SAFE_INTEGRATED_PARENT_DISPLAYS.has(display)) {
+        const safeBefore = mountBefore === wrapper ? wrapper?.nextSibling : mountBefore;
+        return { parent: mountParent, before: safeBefore || null };
+      }
+      mountBefore = mountParent;
+      mountParent = mountParent.parentElement;
     }
-    const profileCount = Array.from(board.querySelectorAll?.("a[href*='profiles.php']") || [])
-      .filter((anchor) => core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "") > 0)
-      .length;
-    return profileCount > 0 && profileCount <= 220 ? board : null;
+    return null;
+  }
+
+  function rankedWarMountPoint(board, wrapper = null) {
+    const mainContainer = document.querySelector?.("#mainContainer");
+    if (board?.parentElement && board !== mainContainer) {
+      return rankedWarSafeMountPoint(board.parentElement, board, wrapper);
+    }
+    if (mainContainer) {
+      return rankedWarSafeMountPoint(mainContainer, mainContainer.firstChild, wrapper);
+    }
+    if (board?.parentElement) return rankedWarSafeMountPoint(board.parentElement, board, wrapper);
+    return null;
   }
 
   function createRankedWarHost(view) {
     const board = rankedWarBoardForView(view);
-    const parent = board?.parentNode || document.querySelector?.("#mainContainer");
-    if (!parent) return null;
+    const mountPoint = rankedWarMountPoint(board);
+    if (!mountPoint?.parent) return null;
 
-    document.querySelectorAll?.("[data-warbuddy-roster-board]").forEach((candidate) => {
-      delete candidate.dataset.warbuddyRosterBoard;
-    });
-    if (board) board.dataset.warbuddyRosterBoard = "1";
+    markRankedWarBoard(board);
 
     const wrapper = document.createElement("div");
     wrapper.id = INTEGRATED_WRAPPER_ID;
     wrapper.className = "warbuddy-integrated-rank-host";
+    wrapper.dataset.warbuddyBoardVerified = board ? "1" : "0";
     const host = document.createElement("div");
     host.id = INTEGRATED_HOST_ID;
     host.className = "wc-rank-host";
     host.dataset.placement = "rank";
     wrapper.appendChild(host);
-    parent.insertBefore(wrapper, board || parent.firstChild || null);
+    mountPoint.parent.insertBefore(wrapper, mountPoint.before);
     return host;
   }
 
@@ -2442,19 +2469,17 @@
     if (desiredPlacement === "rank") {
       host ||= createRankedWarHost(view);
       if (host) {
-        const markedBoard = document.querySelector?.("[data-warbuddy-roster-board='1']");
-        if (!markedBoard?.isConnected) {
-          const board = rankedWarBoardForView(view);
-          const wrapper = document.getElementById(INTEGRATED_WRAPPER_ID);
-          if (board?.parentNode) {
-            document.querySelectorAll?.("[data-warbuddy-roster-board]").forEach((candidate) => {
-              delete candidate.dataset.warbuddyRosterBoard;
-            });
-            board.dataset.warbuddyRosterBoard = "1";
-            if (wrapper && (wrapper.parentNode !== board.parentNode || wrapper.nextSibling !== board)) {
-              board.parentNode.insertBefore(wrapper, board);
-            }
-          }
+        const wrapper = document.getElementById(INTEGRATED_WRAPPER_ID);
+        const board = rankedWarBoardForView(view);
+        markRankedWarBoard(board);
+        const boardVerified = board ? "1" : "0";
+        if (wrapper && wrapper.dataset.warbuddyBoardVerified !== boardVerified) {
+          wrapper.dataset.warbuddyBoardVerified = boardVerified;
+        }
+        const mountPoint = rankedWarMountPoint(board, wrapper);
+        if (mountPoint?.parent && wrapper
+          && (wrapper.parentNode !== mountPoint.parent || wrapper.nextSibling !== mountPoint.before)) {
+          mountPoint.parent.insertBefore(wrapper, mountPoint.before);
         }
         return { mount: host, placement: "inline", fallback: false };
       }
@@ -5085,12 +5110,12 @@
   window.addEventListener("focus", syncVisibilityState);
   window.addEventListener("online", syncForegroundState);
   window.addEventListener("offline", syncForegroundState);
-  window.addEventListener("resize", () => {
+  const handleViewportResize = () => {
     positionOpenDibsTip(document);
-  });
-  window.visualViewport?.addEventListener?.("resize", () => {
-    positionOpenDibsTip(document);
-  });
+    if (state.displayMode !== "floating" && core.isRankedWarPageUrl(window.location.href)) scheduleRender();
+  };
+  window.addEventListener("resize", handleViewportResize);
+  window.visualViewport?.addEventListener?.("resize", handleViewportResize);
   window.addEventListener("hashchange", syncPageActivation);
   window.addEventListener("popstate", syncPageActivation);
   window.addEventListener("pageshow", start);

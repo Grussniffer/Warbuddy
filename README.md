@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.51
+
+- Prevents the native ranked-war strip from being inserted inside either faction roster and splitting Torn's two-column layout.
+- Mounts provisionally at the safe page boundary until both faction rosters identify their verified common board.
+- Revalidates and re-anchors the strip when Torn rebuilds or replaces the ranked-war DOM.
+- Removes forced flex and grid spanning from the strip wrapper while preserving the native and optional floating layouts.
+
 ## 0.1.50
 
 - Keeps the native profile, attack, and ranked-war roster presentation as the default.
@@ -156,6 +163,19 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.51 - 29 August 2026
+
+- Removes the attack-link-only DOM fallback that could mistake one faction list for the complete ranked-war board before live roster data arrived.
+- Places provisional and verified native mounts at the nearest normal-flow boundary, climbing out of Torn's internal flex, grid, table, or contents layouts.
+- Revalidates the common own/enemy board during reconciliation, allowing Torn SPA remounts and late roster hydration to correct placement.
+- Removes unconditional wrapper flex and grid spanning so Warbuddy cannot create an extra full-width row between the two faction lists.
+
+### 0.1.50 - 29 August 2026
+
+- Keeps Torn-native profile, attack, and ranked-war surfaces as the default while restoring the full floating panel as an explicit opt-in.
+- Keeps Retaliation and Dibs state in Torn's native DOM in either layout.
+- Reuses the same authenticated session, shared tab connection, requests, polling, and live events while switching layouts.
 
 ### 0.1.49 - 29 August 2026
 
