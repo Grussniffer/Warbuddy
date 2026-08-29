@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.47";
+  const SCRIPT_VERSION = "0.1.48";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const COLLAPSED_STORAGE = "warbuddy_collapsed";
@@ -101,6 +101,7 @@
     socket: null,
     socketRequests: new Map(),
     socketRequestSequence: 0,
+    sharedStateRequestSequence: 0,
     socketOpenedAt: 0,
     socketConnectTimer: 0,
     reconnectTimer: 0,
@@ -145,6 +146,7 @@
     loadoutRequestAt: 0,
     loadoutOpenTargetId: 0,
     dibs: { claims: [] },
+    dibsApplicationSequence: 0,
     dibsBusyTargetId: 0,
     dibsBusyAction: "",
     dibsInspectTargetId: 0,
@@ -587,6 +589,15 @@
     state.dibsInspectTargetId = 0;
     state.dibsInspectKey = "";
   };
+  const clearDibsState = (resetSequence = false) => {
+    const current = state.dibs && typeof state.dibs === "object" ? state.dibs : { claims: [] };
+    const changed = (Array.isArray(current.claims) && current.claims.length > 0)
+      || Object.keys(current).some((key) => key !== "claims");
+    state.dibs = { claims: [] };
+    if (resetSequence) state.dibsApplicationSequence = 0;
+    else if (changed) state.dibsApplicationSequence += 1;
+    return changed;
+  };
   const clearLiveFactionData = () => {
     state.rosters.clear();
     state.factionNames.clear();
@@ -596,7 +607,7 @@
     state.loadouts.clear();
     state.loadoutRequestFactionId = "";
     state.loadoutRequestAt = 0;
-    state.dibs = { claims: [] };
+    clearDibsState(true);
     closeDibsDetails();
     state.dibsError = "";
     state.dibsErrorTargetId = 0;
@@ -711,9 +722,23 @@
 
   function requestSharedState() {
     if (!sharedBrokerEnabled() || tabBroker.isLeader() || !tabBroker.hasLeader()) return;
+    const leaderId = tabBroker.leaderId();
+    const requestSequence = ++state.sharedStateRequestSequence;
     tabBroker.request("state", {}, 5_000)
-      .then(applySharedState)
+      .then((payload) => {
+        if (
+          requestSequence !== state.sharedStateRequestSequence
+          || tabBroker?.isLeader()
+          || tabBroker?.leaderId() !== leaderId
+        ) return;
+        applySharedState(payload);
+      })
       .catch(() => {
+        if (
+          requestSequence !== state.sharedStateRequestSequence
+          || tabBroker?.isLeader()
+          || tabBroker?.leaderId() !== leaderId
+        ) return;
         if (isForeground() && !state.sharedSocketOpen) {
           state.phase = "connecting";
           scheduleRender();
@@ -1310,28 +1335,29 @@
     if (state.fallbackActive) pollFallbackSnapshot();
   }
 
-  function applyDibsSnapshot(payload) {
+  function applyDibsSnapshot(payload, { source, baselineSequence } = {}) {
     if (!core.dibsFeatureEnabled(state.settings)) {
-      state.dibs = { claims: [] };
+      clearDibsState();
       return false;
     }
-    const next = payload || { claims: [] };
-    const currentGeneratedAt = Date.parse(String(state.dibs?.generatedAt || ""));
-    const nextGeneratedAt = Date.parse(String(next?.generatedAt || ""));
-    if (Number.isFinite(currentGeneratedAt)) {
-      if (!Number.isFinite(nextGeneratedAt) || nextGeneratedAt < currentGeneratedAt) return false;
-    }
-    state.dibs = next;
+    const result = core.reconcileDibsSnapshot(state.dibs, payload, {
+      source,
+      applicationSequence: state.dibsApplicationSequence,
+      baselineSequence,
+    });
+    if (!result.applied) return false;
+    state.dibs = result.snapshot;
+    state.dibsApplicationSequence = result.applicationSequence;
     return true;
   }
 
-  function applyEvent(topic, payload) {
+  function applyEvent(topic, payload, dibsSource) {
     syncTrustedClock(payload?.serverTime || payload?.generatedAt, `event:${topic}`);
     state.lastLiveDataAt = Date.now();
     if (topic === "war_tracker_settings") {
       state.settings = payload || null;
       if (!core.dibsFeatureEnabled(state.settings)) {
-        state.dibs = { claims: [] };
+        clearDibsState();
         closeDibsDetails();
         state.dibsError = "";
         state.dibsErrorTargetId = 0;
@@ -1361,7 +1387,7 @@
       }
     }
     if (topic === "retaliation") state.retaliation = payload || { attacks: [] };
-    if (topic === "war_dibs") applyDibsSnapshot(payload);
+    if (topic === "war_dibs") applyDibsSnapshot(payload, { source: dibsSource });
     scheduleRender();
     setTimeout(() => {
       maybeLoadEnemyLoadouts();
@@ -1403,7 +1429,7 @@
     state.factionNames = factionNames;
     state.scores = scores;
     state.retaliation = snapshot?.retaliation || { attacks: [] };
-    applyDibsSnapshot(snapshot?.dibs);
+    applyDibsSnapshot(snapshot?.dibs, { source: "fallback-hydration" });
     state.fallbackRevision = String(snapshot?.revision || "");
     state.fallbackUnchangedCount = 0;
     scheduleRender();
@@ -1480,7 +1506,7 @@
     state.scores = new Map(Array.isArray(payload.scores) ? payload.scores : []);
     state.retaliation = payload.retaliation || { attacks: [] };
     state.loadouts = new Map(Array.isArray(payload.loadouts) ? payload.loadouts : []);
-    state.dibs = payload.dibs || { claims: [] };
+    applyDibsSnapshot(payload.dibs, { source: "shared-hydration" });
     state.rosterDataAt = new Map(Array.isArray(payload.rosterDataAt) ? payload.rosterDataAt : []);
     state.fallbackRevision = String(payload.fallbackRevision || "");
     syncTargetDraft();
@@ -1501,7 +1527,7 @@
       return;
     }
     if (type === "event" && TOPICS.includes(String(payload?.topic || ""))) {
-      applyEvent(String(payload.topic), payload.payload);
+      applyEvent(String(payload.topic), payload.payload, "shared-live-event");
       return;
     }
     if (type === "snapshot") {
@@ -1631,7 +1657,7 @@
     catch { return; }
     syncTrustedClock(message?.serverTime || message?.generatedAt, "websocket");
     if (message?.type === "event" && TOPICS.includes(String(message.topic || ""))) {
-      applyEvent(String(message.topic), message.payload);
+      applyEvent(String(message.topic), message.payload, "websocket");
       if (sharedBrokerEnabled() && tabBroker.isLeader()) {
         tabBroker.broadcast("event", { topic: String(message.topic), payload: message.payload });
       }
@@ -2501,6 +2527,7 @@
         return false;
       }
     }
+    const dibsMutationBaselineSequence = state.dibsApplicationSequence;
     const expectsSocketSnapshot = socketIsOpen();
     const resumeFallback = !expectsSocketSnapshot && state.fallbackActive;
     state.dibsBusyTargetId = memberId;
@@ -2525,7 +2552,10 @@
         data: JSON.stringify({ action, targetMemberId: memberId }),
         label: "Dibs",
       });
-      if (!expectsSocketSnapshot) applyDibsSnapshot(response);
+      applyDibsSnapshot(response, {
+        source: "mutation-response",
+        baselineSequence: dibsMutationBaselineSequence,
+      });
       if (action === "release") applyReleasedTargetWatchState(memberId, response);
       succeeded = true;
       if (action === "claim") {

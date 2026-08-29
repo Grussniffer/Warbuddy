@@ -621,6 +621,56 @@
       && toTimestampMs(claim?.expiresAt) > nowMs
     ));
 
+  const stableDibsValue = (value) => {
+    if (Array.isArray(value)) return value.map(stableDibsValue);
+    if (!value || typeof value !== "object") return value;
+    return Object.keys(value).sort().reduce((normalized, key) => {
+      normalized[key] = stableDibsValue(value[key]);
+      return normalized;
+    }, {});
+  };
+
+  const sameDibsSnapshot = (left, right) => {
+    try {
+      return JSON.stringify(stableDibsValue(left)) === JSON.stringify(stableDibsValue(right));
+    } catch {
+      return left === right;
+    }
+  };
+
+  const reconcileDibsSnapshot = (current, payload, options = {}) => {
+    const existing = current && typeof current === "object" ? current : { claims: [] };
+    const next = payload && typeof payload === "object" ? payload : { claims: [] };
+    const applicationSequence = Number.isSafeInteger(Number(options.applicationSequence))
+      && Number(options.applicationSequence) >= 0
+      ? Number(options.applicationSequence)
+      : 0;
+    if (sameDibsSnapshot(existing, next)) {
+      return { snapshot: existing, applicationSequence, applied: false };
+    }
+    const currentGeneratedAt = Date.parse(String(existing?.generatedAt || ""));
+    const nextGeneratedAt = Date.parse(String(next?.generatedAt || ""));
+    if (Number.isFinite(currentGeneratedAt)) {
+      if (!Number.isFinite(nextGeneratedAt) || nextGeneratedAt < currentGeneratedAt) {
+        return { snapshot: existing, applicationSequence, applied: false };
+      }
+      if (nextGeneratedAt === currentGeneratedAt) {
+        const source = String(options.source || "");
+        const orderedLiveEvent = source === "websocket" || source === "shared-live-event";
+        const mutationStillCurrent = source === "mutation-response"
+          && Number(options.baselineSequence) === applicationSequence;
+        if (!orderedLiveEvent && !mutationStillCurrent) {
+          return { snapshot: existing, applicationSequence, applied: false };
+        }
+      }
+    }
+    return {
+      snapshot: next,
+      applicationSequence: applicationSequence + 1,
+      applied: true,
+    };
+  };
+
   const dibsAttackPresentation = (claim, viewerPlayerId, actionLabel = "Attack") => {
     const action = String(actionLabel || "Attack").trim() || "Attack";
     if (!claim) return { state: "free", label: action, title: action };
@@ -869,6 +919,7 @@
     isWarbuddyPageUrl,
     locationCode,
     memberAvailability,
+    reconcileDibsSnapshot,
     normalizeDisplayMode,
     normalizeRosterFilter,
     normalizeTargetGroups,

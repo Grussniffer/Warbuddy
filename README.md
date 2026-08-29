@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.48
+
+- Reconciles every successful Dibs claim or release immediately through source-aware timestamp and application-sequence ordering, even when a socket event was expected.
+- Keeps same-millisecond live events in arrival order while rejecting reordered mutation responses and differing shared hydration that started from older state.
+- Binds shared traffic to a fresh term for each leadership tenure so delayed responses from a former tenure cannot restore stale Dibs owners.
+- Preserves the existing busy/error experience and server authority without adding backend changes, requests, polling, or delay.
+
 ## 0.1.47
 
 - Enables Dibs only when fresh cached rosters place the claimant and target in the same settled country, including the same foreign country.
@@ -127,6 +134,15 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.48 - 29 August 2026
+
+- Applies every successful claim/release response locally through a source-aware `generatedAt` reconciler.
+- Uses an application-sequence baseline so an equal-millisecond mutation response applies only when no newer Dibs state arrived while that mutation was in flight.
+- Preserves ordered equal-millisecond WebSocket events, treats identical snapshots as no-ops, and prevents differing equal-millisecond fallback or shared hydration from replacing current state.
+- Gives every broker leadership tenure a fresh term and validates that term plus lease freshness across announcements, data, requests, responses, resignations, and handoff.
+- Uses broker protocol v2; already-open older tabs must refresh before joining the v2 shared connection.
+- Keeps Redis, database, backend authority, polling, and normal live-delivery timing unchanged.
 
 ### 0.1.47 - 29 August 2026
 

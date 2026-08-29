@@ -102,6 +102,15 @@ describe("Warbuddy cross-tab connection broker", () => {
       type: "socket-action",
       payload: { action: "war_tracker:loadouts", payload: { factionId: "789" } },
     }]);
+    const leaderMessages = FakeBroadcastChannel.sent.filter((message) => message.kind === "leader");
+    const requestMessage = FakeBroadcastChannel.sent.find((message) => message.kind === "request");
+    const responseMessage = FakeBroadcastChannel.sent.find((message) => message.kind === "response");
+    const dataMessage = FakeBroadcastChannel.sent.find((message) => message.kind === "data");
+    assert.ok(leaderMessages.length > 0);
+    assert.ok(leaderMessages.every((message) => typeof message.leaderTerm === "string" && message.leaderTerm));
+    assert.equal(requestMessage?.leaderTerm, leaderMessages.at(-1).leaderTerm);
+    assert.equal(responseMessage?.leaderTerm, requestMessage?.leaderTerm);
+    assert.equal(dataMessage?.leaderTerm, requestMessage?.leaderTerm);
 
     first.close();
     second.close();
@@ -216,6 +225,207 @@ describe("Warbuddy cross-tab connection broker", () => {
 
     first.close();
     second.close();
+  });
+
+  it("creates a fresh term whenever the same tab acquires a new leadership tenure", async () => {
+    FakeBroadcastChannel.reset();
+    const broker = createBroker("a", { electionGraceMs: 0 });
+    broker.setScope("123:456");
+    broker.setActive(true);
+    await delay(5);
+
+    const firstTerm = FakeBroadcastChannel.sent
+      .filter((message) => message.kind === "leader" && message.from === "a")
+      .at(-1)?.leaderTerm;
+    assert.equal(typeof firstTerm, "string");
+    assert.ok(firstTerm);
+
+    broker.setScope("");
+    broker.setScope("123:456");
+    await delay(5);
+
+    const secondTerm = FakeBroadcastChannel.sent
+      .filter((message) => message.kind === "leader" && message.from === "a")
+      .at(-1)?.leaderTerm;
+    assert.equal(typeof secondTerm, "string");
+    assert.ok(secondTerm);
+    assert.notEqual(secondTerm, firstTerm);
+
+    broker.close();
+  });
+
+  it("binds pending state requests to a term when the same leader ID loses and regains leadership", async () => {
+    FakeBroadcastChannel.reset();
+    let clock = 1_000;
+    const follower = createBroker("z", {
+      now: () => clock,
+      setIntervalFn: () => 1,
+      clearIntervalFn() {},
+    });
+    const rawLeader = new FakeBroadcastChannel("private-test-channel");
+    const postFromLeader = (message) => rawLeader.postMessage({
+      protocol: brokerApi.PROTOCOL,
+      scope: "123:456",
+      from: "a",
+      at: clock,
+      ...message,
+    });
+    follower.setScope("123:456");
+
+    postFromLeader({ kind: "leader" });
+    assert.equal(follower.leaderId(), "", "v2 leader messages require a tenure term");
+    postFromLeader({ kind: "leader", leaderTerm: "term-one" });
+    assert.equal(follower.leaderId(), "a");
+
+    const firstResult = follower.request("state", {}).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    const firstRequest = FakeBroadcastChannel.sent
+      .filter((message) => message.kind === "request" && message.from === "z")
+      .at(-1);
+    assert.equal(firstRequest?.leaderTerm, "term-one");
+
+    clock += 1;
+    postFromLeader({ kind: "leader", leaderTerm: "term-two" });
+    const rejectedFirst = await firstResult;
+    assert.match(rejectedFirst.error?.message || "", /Shared live connection changed/);
+
+    const secondResult = follower.request("state", {}).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    const secondRequest = FakeBroadcastChannel.sent
+      .filter((message) => message.kind === "request" && message.from === "z")
+      .at(-1);
+    assert.equal(secondRequest?.leaderTerm, "term-two");
+
+    postFromLeader({
+      kind: "response",
+      to: "z",
+      requestId: secondRequest.requestId,
+      leaderTerm: "term-one",
+      success: true,
+      payload: { owner: "stale" },
+    });
+    const rejectedSecond = await secondResult;
+    assert.match(rejectedSecond.error?.message || "", /Shared live connection changed/);
+
+    follower.close();
+    rawLeader.close();
+  });
+
+  it("rejects a state response after the leader lease expires even before maintenance runs", async () => {
+    FakeBroadcastChannel.reset();
+    let clock = 2_000;
+    let maintenanceRuns = 0;
+    let runMaintenance = () => {};
+    const follower = createBroker("z", {
+      now: () => clock,
+      setIntervalFn: (callback) => {
+        runMaintenance = () => {
+          maintenanceRuns += 1;
+          callback();
+        };
+        return 1;
+      },
+      clearIntervalFn() {},
+    });
+    const rawLeader = new FakeBroadcastChannel("private-test-channel");
+    follower.setScope("123:456");
+    rawLeader.postMessage({
+      protocol: brokerApi.PROTOCOL,
+      scope: "123:456",
+      from: "a",
+      at: clock,
+      kind: "leader",
+      leaderTerm: "expired-term",
+    });
+
+    const result = follower.request("state", {}).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    const request = FakeBroadcastChannel.sent
+      .filter((message) => message.kind === "request" && message.from === "z")
+      .at(-1);
+    clock += 31;
+    rawLeader.postMessage({
+      protocol: brokerApi.PROTOCOL,
+      scope: "123:456",
+      from: "a",
+      at: clock,
+      kind: "response",
+      to: "z",
+      requestId: request.requestId,
+      leaderTerm: "expired-term",
+      success: true,
+      payload: { owner: "stale" },
+    });
+
+    const rejected = await result;
+    assert.match(rejected.error?.message || "", /Shared live connection changed/);
+    assert.equal(maintenanceRuns, 0, "the response itself must check freshness before maintenance runs");
+    assert.equal(typeof runMaintenance, "function");
+
+    follower.close();
+    rawLeader.close();
+  });
+
+  it("rejects a delayed response from a former leader after leadership changes", async () => {
+    FakeBroadcastChannel.reset();
+    let resolveOldState;
+    const oldLeader = createBroker("b", {
+      onRequest(type) {
+        if (type !== "state") return undefined;
+        return new Promise((resolve) => { resolveOldState = resolve; });
+      },
+    });
+    const follower = createBroker("z");
+    oldLeader.setScope("123:456");
+    follower.setScope("123:456");
+    oldLeader.setActive(true);
+    follower.setActive(true);
+    await delay(15);
+    assert.equal(oldLeader.isLeader(), true);
+
+    const oldResult = follower.request("state", {}).then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await delay(0);
+    assert.equal(typeof resolveOldState, "function");
+
+    FakeBroadcastChannel.paused = true;
+    const newLeader = createBroker("a", {
+      onRequest(type) {
+        return type === "state" ? { owner: "new" } : undefined;
+      },
+      electionGraceMs: 0,
+    });
+    newLeader.setScope("123:456");
+    newLeader.setActive(true);
+    await delay(5);
+    assert.equal(newLeader.isLeader(), true);
+
+    FakeBroadcastChannel.paused = false;
+    newLeader.setActive(true);
+    await delay(5);
+    assert.equal(newLeader.isLeader(), true);
+    assert.equal(oldLeader.isLeader(), false);
+    assert.equal(follower.leaderId(), "a");
+
+    const rejectedOld = await oldResult;
+    assert.match(rejectedOld.error?.message || "", /Shared live connection changed/);
+    assert.deepEqual(await follower.request("state", {}), { owner: "new" });
+
+    resolveOldState({ owner: "old" });
+    await delay(0);
+    assert.deepEqual(await follower.request("state", {}), { owner: "new" });
+
+    oldLeader.close();
+    newLeader.close();
+    follower.close();
   });
 
   it("refuses credential-bearing messages and keeps broker snapshots credential-free", async () => {

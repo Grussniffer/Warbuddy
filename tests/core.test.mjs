@@ -681,6 +681,104 @@ describe("Warbuddy live state", () => {
     assert.equal(core.activeDibsClaim(payload, 103, nowMs), undefined);
   });
 
+  it("orders equal-millisecond Dibs snapshots by source and mutation baseline", () => {
+    const initial = {
+      generatedAt: "2026-08-29T10:00:00.000Z",
+      claims: [{ targetMemberId: 101, claimedByPlayerId: "1" }],
+    };
+    const websocketClaim = {
+      generatedAt: "2026-08-29T10:00:00.000Z",
+      claims: [{ targetMemberId: 101, claimedByPlayerId: "2" }],
+    };
+    const mutationRelease = {
+      generatedAt: "2026-08-29T10:00:00.000Z",
+      claims: [],
+    };
+    const baselineSequence = 7;
+
+    const websocketFirst = core.reconcileDibsSnapshot(initial, websocketClaim, {
+      source: "websocket",
+      applicationSequence: baselineSequence,
+    });
+    assert.deepEqual(websocketFirst, {
+      snapshot: websocketClaim,
+      applicationSequence: 8,
+      applied: true,
+    });
+    const delayedMutation = core.reconcileDibsSnapshot(websocketFirst.snapshot, mutationRelease, {
+      source: "mutation-response",
+      applicationSequence: websocketFirst.applicationSequence,
+      baselineSequence,
+    });
+    assert.strictEqual(delayedMutation.snapshot, websocketClaim);
+    assert.equal(delayedMutation.applicationSequence, 8);
+    assert.equal(delayedMutation.applied, false);
+
+    const mutationFirst = core.reconcileDibsSnapshot(initial, mutationRelease, {
+      source: "mutation-response",
+      applicationSequence: baselineSequence,
+      baselineSequence,
+    });
+    assert.equal(mutationFirst.applied, true);
+    const websocketLast = core.reconcileDibsSnapshot(mutationFirst.snapshot, websocketClaim, {
+      source: "websocket",
+      applicationSequence: mutationFirst.applicationSequence,
+    });
+    assert.strictEqual(websocketLast.snapshot, websocketClaim);
+    assert.equal(websocketLast.applicationSequence, 9);
+    assert.equal(websocketLast.applied, true);
+
+    for (const source of ["shared-hydration", "fallback-hydration"]) {
+      const staleHydration = core.reconcileDibsSnapshot(websocketClaim, mutationRelease, {
+        source,
+        applicationSequence: 8,
+      });
+      assert.strictEqual(staleHydration.snapshot, websocketClaim);
+      assert.equal(staleHydration.applicationSequence, 8);
+      assert.equal(staleHydration.applied, false);
+    }
+
+    const identical = {
+      claims: [{ claimedByPlayerId: "2", targetMemberId: 101 }],
+      generatedAt: "2026-08-29T10:00:00.000Z",
+    };
+    const identicalResult = core.reconcileDibsSnapshot(websocketClaim, identical, {
+      source: "websocket",
+      applicationSequence: 8,
+    });
+    assert.strictEqual(identicalResult.snapshot, websocketClaim);
+    assert.equal(identicalResult.applicationSequence, 8);
+    assert.equal(identicalResult.applied, false);
+  });
+
+  it("keeps Dibs timestamps monotonic across every source", () => {
+    const current = {
+      generatedAt: "2026-08-29T10:00:02.000Z",
+      claims: [{ targetMemberId: 101, claimedByPlayerId: "2" }],
+    };
+    for (const payload of [
+      { generatedAt: "2026-08-29T10:00:01.000Z", claims: [] },
+      { claims: [] },
+    ]) {
+      const result = core.reconcileDibsSnapshot(current, payload, {
+        source: "websocket",
+        applicationSequence: 4,
+      });
+      assert.strictEqual(result.snapshot, current);
+      assert.equal(result.applicationSequence, 4);
+      assert.equal(result.applied, false);
+    }
+    const newest = { generatedAt: "2026-08-29T10:00:03.000Z", claims: [] };
+    assert.deepEqual(core.reconcileDibsSnapshot(current, newest, {
+      source: "shared-hydration",
+      applicationSequence: 4,
+    }), {
+      snapshot: newest,
+      applicationSequence: 5,
+      applied: true,
+    });
+  });
+
   it("makes claimed attacks obvious without blocking their links", () => {
     const claim = {
       claimedByPlayerId: "2813921",
@@ -997,6 +1095,34 @@ describe("Warbuddy panel state", () => {
     assert.match(updateSource, /const eligibility = dibsClaimContext\(target, view\)/);
     assert.match(updateSource, /showDibsError\(eligibility\.reason, memberId\)/);
     assert.match(updateSource, /requestJson\(\{/);
+  });
+
+  it("reconciles successful Dibs responses and shared state through one monotonic path", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const applySource = compactSource(sourceSection(source, "function applyDibsSnapshot", "function applyEvent"));
+    const fallbackSource = compactSource(sourceSection(source, "function applyFallbackSnapshot", "function markFallbackSnapshotUnchanged"));
+    const sharedRequestSource = compactSource(sourceSection(source, "function requestSharedState", "function tornPageNowMs"));
+    const sharedStateSource = compactSource(sourceSection(source, "function applySharedState", "function handleTabBrokerData"));
+    const sharedDataSource = compactSource(sourceSection(source, "function handleTabBrokerData", "function handleTabBrokerRequest"));
+    const socketSource = compactSource(sourceSection(source, "function handleSocketMessage", "function scheduleReconnect"));
+    const updateSource = compactSource(sourceSection(source, "async function updateDibs", "function actionQueueMarkup"));
+
+    assert.match(applySource, /core\.reconcileDibsSnapshot\(state\.dibs, payload/);
+    assert.match(applySource, /applicationSequence: state\.dibsApplicationSequence/);
+    assert.match(updateSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);
+    assert.match(updateSource, /const dibsMutationBaselineSequence = state\.dibsApplicationSequence/);
+    assert.match(updateSource, /const response = await requestJson\(\{/);
+    assert.match(updateSource, /source: "mutation-response"/);
+    assert.match(updateSource, /baselineSequence: dibsMutationBaselineSequence/);
+    assert.doesNotMatch(updateSource, /if \(!expectsSocketSnapshot\) applyDibsSnapshot/);
+    assert.match(fallbackSource, /source: "fallback-hydration"/);
+    assert.match(sharedStateSource, /source: "shared-hydration"/);
+    assert.doesNotMatch(sharedStateSource, /state\.dibs = payload\.dibs/);
+    assert.match(sharedDataSource, /applyEvent\(String\(payload\.topic\), payload\.payload, "shared-live-event"\)/);
+    assert.match(socketSource, /applyEvent\(String\(message\.topic\), message\.payload, "websocket"\)/);
+    assert.match(sharedRequestSource, /const leaderId = tabBroker\.leaderId\(\)/);
+    assert.match(sharedRequestSource, /requestSequence !== state\.sharedStateRequestSequence/);
+    assert.match(sharedRequestSource, /tabBroker\?\.leaderId\(\) !== leaderId/);
   });
 
   it("removes a released Dibs target from personal watch without discarding other draft edits", async () => {
@@ -1390,7 +1516,8 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(dibsMarkupSource, /!canRelease \|\| anyBusy \? " disabled" : ""/);
     assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
     assert.match(updateDibsSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);
-    assert.match(updateDibsSource, /if \(!expectsSocketSnapshot\) applyDibsSnapshot\(response\)/);
+    assert.match(updateDibsSource, /source: "mutation-response"/);
+    assert.match(updateDibsSource, /baselineSequence: dibsMutationBaselineSequence/);
     assert.match(updateDibsSource, /if \(resumeFallback\) stopFallbackPolling\(\)/);
     assert.match(updateDibsSource, /if \(resumeFallback && !socketIsOpen\(\)\) startFallbackPolling\(\)/);
     assert.match(updateDibsSource, /finally \{ state\.dibsBusyTargetId = 0/);
