@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.52
+
+- Replaces the full-width attack-page target strip with a tiny inline HUD beside Torn's verified defender labels.
+- Keeps Retaliation and Dibs state visible with compact Dibs, Watch, and optional floating-tools controls.
+- Refuses to guess or fall back over the combat window when Torn's target label is not available yet.
+- Keeps the full profile context, ranked-war layout, and optional floating panel unchanged.
+
 ## 0.1.51
 
 - Prevents the native ranked-war strip from being inserted inside either faction roster and splitting Torn's two-column layout.
@@ -163,6 +170,13 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.52 - 29 August 2026
+
+- Mounts a compact attack-only span directly inside a verified target or defender label container instead of before Torn's entire combat section.
+- Shows only Retal, Dibs, Dibs action, Watch, outcome, error, and a tiny floating-tools toggle; duplicated target details, key editor, roster link, and full card styling remain off the attack surface.
+- Returns no native attack mount until the safe label exists, allowing the normal restoration heartbeat to retry without falling back to `#mainContainer`.
+- Isolates compact-control clicks from Torn's combat handlers and keeps touch controls usable without changing profile, roster, floating, connection, or polling behavior.
 
 ### 0.1.51 - 29 August 2026
 

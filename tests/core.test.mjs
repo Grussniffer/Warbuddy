@@ -1523,6 +1523,26 @@ describe("Warbuddy userscript source contracts", () => {
       "function targetContextMountPoint",
       "function handleTargetContextAction"
     ));
+    const attackMountSource = compactSource(sourceSection(
+      source,
+      "function attackTargetLabelsContainer",
+      "function targetContextMountPoint"
+    ));
+    const attackMarkupSource = compactSource(sourceSection(
+      source,
+      "const attackDibsState = claim",
+      "const dibsState = claim"
+    ));
+    const profileMarkupSource = compactSource(sourceSection(
+      source,
+      "const dibsState = claim",
+      "function handleTargetContextAction"
+    ));
+    const actionSource = compactSource(sourceSection(
+      source,
+      "function handleTargetContextAction",
+      "function syncTargetPageContext"
+    ));
     const syncContextSource = compactSource(sourceSection(
       source,
       "function syncTargetPageContext",
@@ -1532,26 +1552,113 @@ describe("Warbuddy userscript source contracts", () => {
 
     assert.match(activationSource, /const nextAttackTargetId = active \? core\.attackPageTargetId\(href\) : 0/);
     assert.match(activationSource, /const nextProfileTargetId = active \? core\.profilePageTargetId\(href\) : 0/);
-    assert.match(contextSource, /\[class\*='labelsContainer'\]/);
+    assert.match(attackMountSource, /\[class\*='labelsContainer'\]/);
+    assert.match(attackMountSource, /core\.profileMemberIdFromUrl/);
+    assert.match(attackMountSource, /candidate\.closest\?\.\("\[class\*='defender'\]"\)/);
+    assert.match(attackMountSource, /const matchedDefender = defenderCandidates\.find\(\(\{ defender \}\) => matchesTargetProfile\(defender\)\)/);
+    assert.match(attackMountSource, /if \(defenderCandidates\.length === 1\) return defenderCandidates\[0\]\.candidate/);
+    assert.match(attackMountSource, /return locallyMatched\.length === 1 \? locallyMatched\[0\] : null/);
+    assert.match(contextSource, /if \(state\.attackTargetId\) \{ const attackMount = attackTargetLabelsContainer\(\); if \(!attackMount\) return null; return \{ parent: attackMount, before: null, placement: "attack" \}/);
+    assert.doesNotMatch(contextSource.slice(0, contextSource.indexOf("const mainContainer = state.profileTargetId")), /mainContainer|attackSection/);
     assert.match(contextSource, /document\.querySelector\?\.\("\.profile-container"\).*document\.querySelector\?\.\("\[class\*='profile-container'\]"\).*document\.querySelector\?\.\("\[class\*='profileWrapper'\]"\).*document\.getElementById\?\.\("mainContainer"\)/);
     assert.match(contextSource, /placement: state\.profileTargetId \? "profile" : "attack"/);
     assert.match(contextSource, /const memberId = targetPageMemberId\(\)/);
-    assert.match(contextSource, /wc-native-state wc-native-dibs/);
-    assert.match(contextSource, /wc-native-state wc-native-retal/);
-    assert.match(contextSource, /dibsMarkup\(targetRecord, view, claim, `target-\$\{memberId\}`\)/);
-    assert.match(contextSource, /data-action="toggle-watch"/);
-    assert.match(contextSource, /data-target-member="\$\{memberId\}"/);
-    assert.match(contextSource, /data-action="set-display-mode"/);
-    assert.match(contextSource, /data-display-mode="floating"/);
-    assert.match(contextSource, /data-display-mode="native"/);
-    assert.match(contextSource, /const showKeyEditor = state\.displayMode !== "floating"/, "floating mode keeps a single API-key editor in the full panel");
+    assert.match(attackMarkupSource, /wc-native-state wc-native-dibs/);
+    assert.match(attackMarkupSource, /wc-native-state wc-native-retal/);
+    assert.match(attackMarkupSource, /dibsMarkup\(targetRecord, view, claim, `attack-\$\{memberId\}`\)/);
+    assert.match(attackMarkupSource, /data-action="toggle-watch"/);
+    assert.match(attackMarkupSource, /data-target-member="\$\{memberId\}"/);
+    assert.match(attackMarkupSource, /data-action="set-display-mode"/);
+    assert.match(attackMarkupSource, /data-display-mode="\$\{floating \? "native" : "floating"\}"/);
+    assert.match(attackMarkupSource, /wc-native-brand wc-attack-brand/);
+    assert.match(attackMarkupSource, /wc-attack-brand/);
+    assert.doesNotMatch(attackMarkupSource, /wc-native-target|wc-native-details|wc-native-key|War roster|loadoutMarkup/);
+    assert.match(profileMarkupSource, /wc-native-target/);
+    assert.match(profileMarkupSource, /wc-native-details/);
+    assert.match(profileMarkupSource, /wc-native-key/);
+    assert.match(profileMarkupSource, /War roster/);
+    assert.match(profileMarkupSource, /data-display-mode="floating"/);
+    assert.match(profileMarkupSource, /data-display-mode="native"/);
+    assert.match(profileMarkupSource, /const showKeyEditor = state\.displayMode !== "floating"/, "floating mode keeps a single API-key editor in the full panel");
+    assert.match(actionSource, /event\.currentTarget\?\.classList\?\.contains\("wc-attack-context"\)\) event\.stopPropagation\(\)/);
     assert.match(syncContextSource, /context\.id = TARGET_CONTEXT_ID/);
     assert.match(syncContextSource, /context\.addEventListener\("click", handleTargetContextAction\)/);
+    assert.match(syncContextSource, /context\.addEventListener\("pointerdown", \(event\) => \{ if \(event\.currentTarget\?\.classList\?\.contains\("wc-attack-context"\)\) event\.stopPropagation\(\)/);
+    assert.match(syncContextSource, /const expectedTagName = mountPoint\.placement === "attack" \? "SPAN" : "DIV"/);
+    assert.match(syncContextSource, /document\.createElement\(expectedTagName\.toLowerCase\(\)\)/);
     assert.match(syncContextSource, /mountPoint\.parent\.insertBefore\(context, mountPoint\.before \|\| null\)/);
     assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
     assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\); else removeTargetContext\(\)/);
     assert.match(renderSource, /if \(state\.displayMode !== "floating" && targetPage\)/);
     assert.doesNotMatch(source, /function attackTargetMarkup|Current Torn target/);
+  });
+
+  it("mounts the compact attack HUD only in a verified target-side label container", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const mountSource = sourceSection(
+      source,
+      "function attackTargetLabelsContainer",
+      "function targetContextMarkup"
+    );
+    const area = (kind, memberId = 0) => ({
+      kind,
+      querySelectorAll() {
+        return memberId
+          ? [{ href: `https://www.torn.com/profiles.php?XID=${memberId}`, getAttribute() { return this.href; } }]
+          : [];
+      },
+    });
+    const label = (
+      targetArea,
+      isConnected = true,
+      defenderArea = targetArea.kind === "defender" ? targetArea : null
+    ) => ({
+      isConnected,
+      parentElement: targetArea,
+      closest(selector) {
+        if (selector.includes("playerArea")) return targetArea;
+        if (selector.includes("defender")) return defenderArea;
+        return null;
+      },
+    });
+    const resolveMount = (candidates) => {
+      const context = {
+        result: null,
+        state: { attackTargetId: 42, profileTargetId: 0 },
+        core: {
+          profileMemberIdFromUrl(value) {
+            return Number(new URL(value).searchParams.get("XID") || 0);
+          },
+        },
+        URL,
+        document: {
+          querySelectorAll() { return candidates; },
+          querySelector() { return null; },
+          getElementById() { return null; },
+        },
+      };
+      runInNewContext(`${mountSource}\nresult = targetContextMountPoint();`, context);
+      return context.result;
+    };
+
+    const wrongDefender = label(area("defender", 7));
+    const matchedTarget = label(area("defender", 42));
+    const profileMatched = resolveMount([wrongDefender, matchedTarget]);
+    assert.equal(profileMatched.parent, matchedTarget);
+    assert.equal(profileMatched.before, null);
+    assert.equal(profileMatched.placement, "attack");
+
+    const defenderFallback = label(area("defender"));
+    assert.equal(resolveMount([label(area("playerArea")), defenderFallback]).parent, defenderFallback);
+    const locallyMatched = label(area("playerArea", 42));
+    assert.equal(resolveMount([label(area("playerArea", 7)), locallyMatched]).parent, locallyMatched);
+    const sharedPlayerArea = area("playerArea", 42);
+    const attackerLabels = label(sharedPlayerArea);
+    const targetLabels = label(sharedPlayerArea, true, area("defender"));
+    assert.equal(resolveMount([attackerLabels, targetLabels]).parent, targetLabels);
+    assert.equal(resolveMount([label(sharedPlayerArea), label(sharedPlayerArea)]), null);
+    assert.equal(resolveMount([label(area("playerArea"))]), null);
+    assert.equal(resolveMount([label(area("defender", 42), false)]), null);
   });
 
   it("keeps watched-target options stable, searchable, filterable, and explicitly actionable", async () => {
@@ -1679,11 +1786,34 @@ describe("Warbuddy userscript source contracts", () => {
   it("provides responsive native target and ranked-war controls", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const styleSource = sourceSection(source, "addStyle(`", "const normalizeResponse");
+    const attackRoot = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-attack-context \{([^}]*)\}/)?.[1]);
+    const profileRoot = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-profile-context \{([^}]*)\}/)?.[1]);
+    const attackStates = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-attack-context \.wc-native-states \{([^}]*)\}/)?.[1]);
+    const attackActions = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-attack-context \.wc-native-actions \{([^}]*)\}/)?.[1]);
+    const attackState = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-attack-context \.wc-native-state \{([^}]*)\}/)?.[1]);
+    const attackResult = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-attack-context \.wc-attack-result \{([^}]*)\}/)?.[1]);
 
+    assert.match(profileRoot, /display:flex; width:100%; flex:1 0 100%; flex-wrap:wrap/);
+    assert.match(attackRoot, /position:static !important/);
+    assert.match(attackRoot, /display:inline-flex/);
+    assert.match(attackRoot, /width:auto/);
+    assert.match(attackRoot, /max-width:min\(260px,100%\)/);
+    assert.match(attackRoot, /flex:0 1 auto/);
+    assert.match(attackRoot, /flex-wrap:nowrap/);
+    assert.match(attackRoot, /overflow:hidden/);
+    assert.match(attackRoot, /box-shadow:none/);
+    assert.doesNotMatch(attackRoot, /(?:^|;\s*)width:100%|flex:1 0 100%|position:(?:fixed|absolute)/);
+    assert.match(attackStates, /min-width:0; max-width:145px; flex:1 1 auto/);
+    assert.match(attackStates, /overflow:hidden/);
+    assert.doesNotMatch(attackStates, /flex:0 0 auto/);
+    assert.match(attackActions, /min-width:0; flex:0 0 auto/);
+    assert.match(attackState, /min-width:0; min-height:20px; max-width:145px; flex:0 1 auto; overflow:hidden/);
+    assert.match(attackResult, /min-width:0; min-height:20px; max-width:150px; flex:0 1 auto/);
     assert.match(styleSource, /@media\s*\(max-width:\s*620px\)/);
     assert.match(styleSource, /#\$\{TARGET_CONTEXT_ID\} \.wc-native-details \{ order:5; flex-basis:100%/);
     assert.match(styleSource, /#\$\{TARGET_CONTEXT_ID\} \.wc-native-states \{ margin-left:auto/);
     assert.match(styleSource, /@media \(pointer:coarse\) \{ #\$\{TARGET_CONTEXT_ID\} \.wc-button,[\s\S]*?min-width:36px; min-height:36px/);
+    assert.match(styleSource, /#\$\{TARGET_CONTEXT_ID\} \.wc-attack-icon,[\s\S]*?min-width:36px; min-height:36px/);
     assert.match(styleSource, /@media\s*\(max-width:\s*520px\)/);
     assert.match(styleSource, /#\$\{PANEL_ID\}\.wc-roster-mode \{ max-height:none/);
     assert.match(styleSource, /#\$\{PANEL_ID\}\.wc-roster-mode \.wc-body \{ max-height:none; overflow:visible; overscroll-behavior:auto/);
