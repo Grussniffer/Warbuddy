@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.52
+// @version      0.1.53
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -1430,7 +1430,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.52";
+  const SCRIPT_VERSION = "0.1.53";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -1701,13 +1701,13 @@
     .${INLINE_TOOLS_CLASS} .wc-inline-watch.active { color:#fbbf24; }
     .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
-    .${ROSTER_ACTIONS_CLASS} { display:inline-flex; min-width:0; max-width:min(190px,45vw); flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:3px; margin-right:5px; vertical-align:middle; font:10px/1.2 Arial,Helvetica,sans-serif; }
+    .${ROSTER_ACTIONS_CLASS} { display:inline-flex; min-width:0; max-width:min(190px,45vw); flex-wrap:nowrap; align-items:center; justify-content:flex-end; gap:3px; overflow:hidden; margin-right:5px; vertical-align:middle; font:10px/1.2 Arial,Helvetica,sans-serif; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-state { display:inline-flex; min-height:18px; align-items:center; border:1px solid #52525b; border-radius:3px; padding:1px 4px; background:#27272a; color:#e4e4e7; font-weight:700; white-space:nowrap; }
+    .${ROSTER_ACTIONS_CLASS} .wc-native-state { min-width:0; max-width:86px; flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-retal { border-color:#0284c7; background:#0c4a6e; color:#e0f2fe; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-dibs.mine { border-color:#059669; background:#065f46; color:#d1fae5; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-dibs.taken { border-color:#71717a; background:#52525b; color:#fafafa; }
     #${TARGET_CONTEXT_ID} { box-sizing:border-box; min-width:0; color:var(--default-color,#e4e4e7); font:12px/1.35 Arial,Helvetica,sans-serif; }
-    #${TARGET_CONTEXT_ID}.wc-profile-context { display:flex; width:100%; flex:1 0 100%; flex-wrap:wrap; align-items:center; gap:6px 9px; margin:7px 0; border:1px solid var(--default-panel-divider-outer-side-color,#3f3f46); border-left:3px solid #84a83b; border-radius:4px; background:var(--default-bg-panel-color,#202022); padding:7px 9px; box-shadow:0 2px 7px rgba(0,0,0,.22); }
     #${TARGET_CONTEXT_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${TARGET_CONTEXT_ID} .wc-native-brand { flex:0 0 auto; color:#9fbd57; font-size:10px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
     #${TARGET_CONTEXT_ID} .wc-native-target { min-width:105px; flex:0 1 auto; overflow:hidden; font-weight:800; text-overflow:ellipsis; white-space:nowrap; }
@@ -1745,20 +1745,24 @@
     #${TARGET_CONTEXT_ID} .wc-loadout-line { display:grid; grid-template-columns:42px minmax(0,1fr); gap:3px; }
     #${TARGET_CONTEXT_ID} .wc-loadout-label { color:#71717a; font-weight:700; }
     #${TARGET_CONTEXT_ID} .wc-loadout-value { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context { position:static !important; inset:auto !important; z-index:auto; display:inline-flex; width:auto; max-width:min(260px,100%); min-width:0; flex:0 1 auto; flex-wrap:nowrap; align-items:center; gap:2px; overflow:hidden; margin:1px 0 1px 4px; border:1px solid rgba(113,113,122,.65); border-left-width:1px; border-radius:4px; background:rgba(24,24,27,.72); padding:1px 3px; box-shadow:none; font-size:10px; line-height:1.2; vertical-align:middle; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-brand { display:inline-flex; height:20px; align-items:center; color:#9fbd57; font-size:9px; font-weight:900; letter-spacing:.02em; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-native-states { min-width:0; max-width:145px; flex:1 1 auto; flex-wrap:nowrap; gap:2px; overflow:hidden; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-native-actions { min-width:0; flex:0 0 auto; flex-wrap:nowrap; gap:2px; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-native-states:empty, #${TARGET_CONTEXT_ID}.wc-attack-context .wc-native-actions:empty { display:none; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-native-state { min-width:0; min-height:20px; max-width:145px; flex:0 1 auto; overflow:hidden; border-radius:3px; padding:1px 4px; font-size:9px; text-overflow:ellipsis; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-button, #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-icon { display:inline-flex; width:auto; min-width:20px; min-height:20px; align-items:center; justify-content:center; border:1px solid transparent; border-radius:3px; background:transparent; color:#a1a1aa; padding:1px 4px; font:700 9px/1 Arial,Helvetica,sans-serif; cursor:pointer; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-button:hover, #${TARGET_CONTEXT_ID}.wc-attack-context .wc-button:focus-visible, #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-icon:hover, #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-icon:focus-visible { border-color:#52525b; background:#27272a; color:#f4f4f5; outline:0; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-icon.active, #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-tools.active { color:#9fbd57; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-dibs { width:20px; height:20px; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-result { display:inline-flex; min-width:0; min-height:20px; max-width:150px; flex:0 1 auto; align-items:center; overflow:hidden; color:#86efac; padding:1px 3px; font-size:9px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
-    #${TARGET_CONTEXT_ID}.wc-attack-context .wc-attack-error { display:inline-flex; width:18px; height:18px; align-items:center; justify-content:center; border:1px solid #b91c1c; border-radius:50%; color:#fca5a5; font-size:10px; font-weight:900; cursor:help; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context { position:static !important; inset:auto !important; z-index:auto; min-width:0; flex-wrap:nowrap; align-items:center; gap:2px; border:1px solid rgba(113,113,122,.65); border-left-width:1px; border-radius:4px; background:rgba(24,24,27,.72); box-shadow:none; font-size:10px; line-height:1.2; vertical-align:middle; }
+    #${TARGET_CONTEXT_ID}.wc-attack-context { display:inline-flex; width:auto; max-width:min(260px,100%); flex:0 1 auto; overflow:hidden; margin:1px 0 1px 4px; padding:1px 3px; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context { display:flex; width:100%; height:32px; max-height:32px; flex:0 0 100%; overflow:visible; margin:4px 0; padding:3px 5px; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-brand { display:inline-flex; height:20px; align-items:center; color:#9fbd57; font-size:9px; font-weight:900; letter-spacing:.02em; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-states { min-width:0; max-width:100%; flex:1 1 auto; flex-wrap:nowrap; gap:2px; overflow:hidden; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-actions { min-width:0; flex:0 0 auto; flex-wrap:nowrap; gap:2px; margin-left:auto; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-states:empty, #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-actions:empty { display:none; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-state { min-width:0; min-height:20px; max-width:145px; flex:0 1 auto; overflow:hidden; border-radius:3px; padding:1px 4px; font-size:9px; text-overflow:ellipsis; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-button, #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-icon { display:inline-flex; width:auto; min-width:20px; min-height:20px; align-items:center; justify-content:center; border:1px solid transparent; border-radius:3px; background:transparent; color:#a1a1aa; padding:1px 4px; font:700 9px/1 Arial,Helvetica,sans-serif; cursor:pointer; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-button:hover, #${TARGET_CONTEXT_ID}.wc-compact-context .wc-button:focus-visible, #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-icon:hover, #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-icon:focus-visible { border-color:#52525b; background:#27272a; color:#f4f4f5; outline:0; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-icon.active, #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-tools.active { color:#9fbd57; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-dibs { width:20px; height:20px; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-loadout-button { width:20px; height:20px; border-color:transparent; background:transparent; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-result { display:inline-flex; min-width:0; min-height:20px; max-width:150px; flex:0 1 auto; align-items:center; overflow:hidden; color:#86efac; padding:1px 3px; font-size:9px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+    #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-error { display:inline-flex; width:18px; height:18px; flex:0 0 auto; align-items:center; justify-content:center; border:1px solid #b91c1c; border-radius:50%; color:#fca5a5; font-size:10px; font-weight:900; cursor:help; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-tip { top:auto; bottom:24px; }
     @media (max-width:620px) { #${TARGET_CONTEXT_ID} .wc-native-details { order:5; flex-basis:100%; white-space:normal; } #${TARGET_CONTEXT_ID} .wc-native-states { margin-left:auto; } .${ROSTER_ACTIONS_CLASS} .wc-native-state { max-width:115px; overflow:hidden; text-overflow:ellipsis; } }
-    @media (pointer:coarse) { #${TARGET_CONTEXT_ID} .wc-button, #${TARGET_CONTEXT_ID} .wc-link, #${TARGET_CONTEXT_ID} .wc-loadout-button, #${TARGET_CONTEXT_ID} .wc-attack-icon, :is(#${TARGET_CONTEXT_ID}, .${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-dibs { min-width:36px; min-height:36px; } }
+    @media (pointer:coarse) { #${TARGET_CONTEXT_ID} .wc-button, #${TARGET_CONTEXT_ID} .wc-link, #${TARGET_CONTEXT_ID} .wc-loadout-button, #${TARGET_CONTEXT_ID} .wc-attack-icon, :is(#${TARGET_CONTEXT_ID}, .${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-dibs { min-width:36px; min-height:36px; } #${TARGET_CONTEXT_ID}.wc-profile-context { height:44px; max-height:44px; } }
     .${STATUS_CELL_CLASS} { position:relative !important; color:transparent !important; text-shadow:none !important; }
     .${STATUS_CELL_CLASS} > :not(.${STATUS_DETAIL_CLASS}) { visibility:hidden !important; }
     .${STATUS_DETAIL_CLASS} { position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center; color:var(--user-status-blue-color,#22d3ee) !important; font:inherit; font-weight:700; line-height:1.1; text-align:center; white-space:nowrap; visibility:visible !important; }
@@ -2430,19 +2434,12 @@
   }
 
   function rankedWarMountPoint(board, wrapper = null) {
-    const mainContainer = document.querySelector?.("#mainContainer");
-    if (board?.parentElement && board !== mainContainer) {
-      return rankedWarSafeMountPoint(board.parentElement, board, wrapper);
-    }
-    if (mainContainer) {
-      return rankedWarSafeMountPoint(mainContainer, mainContainer.firstChild, wrapper);
-    }
-    if (board?.parentElement) return rankedWarSafeMountPoint(board.parentElement, board, wrapper);
-    return null;
+    if (!board?.parentElement || board.isConnected === false) return null;
+    return rankedWarSafeMountPoint(board.parentElement, board, wrapper);
   }
 
-  function createRankedWarHost(view) {
-    const board = rankedWarBoardForView(view);
+  function createRankedWarHost(view, board = rankedWarBoardForView(view)) {
+    if (!board?.parentElement || board.isConnected === false) return null;
     const mountPoint = rankedWarMountPoint(board);
     if (!mountPoint?.parent) return null;
 
@@ -2451,7 +2448,7 @@
     const wrapper = document.createElement("div");
     wrapper.id = INTEGRATED_WRAPPER_ID;
     wrapper.className = "warbuddy-integrated-rank-host";
-    wrapper.dataset.warbuddyBoardVerified = board ? "1" : "0";
+    wrapper.dataset.warbuddyBoardVerified = "1";
     const host = document.createElement("div");
     host.id = INTEGRATED_HOST_ID;
     host.className = "wc-rank-host";
@@ -2480,19 +2477,20 @@
     }
 
     if (desiredPlacement === "rank") {
-      host ||= createRankedWarHost(view);
+      const board = rankedWarBoardForView(view);
+      if (!host && board?.parentElement && board.isConnected !== false) {
+        host = createRankedWarHost(view, board);
+      }
       if (host) {
         const wrapper = document.getElementById(INTEGRATED_WRAPPER_ID);
-        const board = rankedWarBoardForView(view);
-        markRankedWarBoard(board);
-        const boardVerified = board ? "1" : "0";
-        if (wrapper && wrapper.dataset.warbuddyBoardVerified !== boardVerified) {
-          wrapper.dataset.warbuddyBoardVerified = boardVerified;
-        }
-        const mountPoint = rankedWarMountPoint(board, wrapper);
-        if (mountPoint?.parent && wrapper
-          && (wrapper.parentNode !== mountPoint.parent || wrapper.nextSibling !== mountPoint.before)) {
-          mountPoint.parent.insertBefore(wrapper, mountPoint.before);
+        if (board?.parentElement && board.isConnected !== false) {
+          markRankedWarBoard(board);
+          if (wrapper) wrapper.dataset.warbuddyBoardVerified = "1";
+          const mountPoint = rankedWarMountPoint(board, wrapper);
+          if (mountPoint?.parent && wrapper
+            && (wrapper.parentNode !== mountPoint.parent || wrapper.nextSibling !== mountPoint.before)) {
+            mountPoint.parent.insertBefore(wrapper, mountPoint.before);
+          }
         }
         return { mount: host, placement: "inline", fallback: false };
       }
@@ -3558,14 +3556,16 @@
   }
 
   function syncIntegratedMemberTools(view = sessionView()) {
-    const canDecorate = state.active
+    const canFindBoard = state.active
       && core.isRankedWarPageUrl(window.location.href)
       && Array.isArray(view?.enemyRoster)
       && view.enemyRoster.length > 0;
-    if (!canDecorate) {
+    if (!canFindBoard) {
       if (state.integratedDecorationsActive) removeInlineMemberTools();
       return;
     }
+    const board = rankedWarBoardForView(view);
+    if (!board || board.isConnected === false) return;
     state.integratedDecorationsActive = true;
 
     const members = new Map(view.enemyRoster.map((member) => [Number(member?.member_id || 0), member]));
@@ -3580,10 +3580,7 @@
     const keepRosterActions = new Set();
     const keepStatusCells = new Set();
     const decoratedRows = [];
-    const board = document.querySelector?.("[data-warbuddy-roster-board='1']");
-    const enemyAnchors = board?.isConnected
-      ? rosterProfileAnchors(view.enemyRoster, board)
-      : enemyProfileAnchors(view);
+    const enemyAnchors = rosterProfileAnchors(view.enemyRoster, board);
 
     for (const anchor of enemyAnchors) {
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
@@ -4233,24 +4230,31 @@
     return locallyMatched.length === 1 ? locallyMatched[0] : null;
   }
 
+  function profileTargetContainer() {
+    const readyForToolbar = (candidate) => {
+      if (!candidate || candidate.isConnected === false) return false;
+      if (Array.from(candidate.children || []).some((child) => child?.id === TARGET_CONTEXT_ID)) return true;
+      const nativeControls = Array.from(candidate.querySelectorAll?.("a[href], button, [role='button']") || [])
+        .filter((control) => !control.closest?.(`#${TARGET_CONTEXT_ID}`));
+      return nativeControls.length >= 2;
+    };
+    const exact = document.querySelector?.(".profile-container");
+    if (exact) return readyForToolbar(exact) ? exact : null;
+    const candidates = Array.from(document.querySelectorAll?.("[class*='profile-container']") || [])
+      .filter((candidate) => readyForToolbar(candidate));
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
   function targetContextMountPoint() {
     if (state.attackTargetId) {
       const attackMount = attackTargetLabelsContainer();
       if (!attackMount) return null;
       return { parent: attackMount, before: null, placement: "attack" };
     }
-    const mainContainer = state.profileTargetId
-      ? document.querySelector?.(".profile-container")
-        || document.querySelector?.("[class*='profile-container']")
-        || document.querySelector?.("[class*='profileWrapper']")
-        || document.getElementById?.("mainContainer")
-      : document.getElementById?.("mainContainer");
-    if (!mainContainer) return null;
-    return {
-      parent: mainContainer,
-      before: mainContainer.firstChild || null,
-      placement: state.profileTargetId ? "profile" : "attack",
-    };
+    if (!state.profileTargetId) return null;
+    const profileMount = profileTargetContainer();
+    if (!profileMount) return null;
+    return { parent: profileMount, before: null, placement: "profile" };
   }
 
   function targetContextMarkup(view) {
@@ -4267,17 +4271,6 @@
     const watchUnavailable = !isOnline() || state.authTerminal || state.targetQuickBusyId > 0 || state.targetsSaving || !currentEnemyRosterIsFresh();
     const activeRetaliation = view.retaliation.find((attack) => Number(attack?.attackerId || 0) === memberId);
     const name = String(member?.member_name || activeRetaliation?.attackerName || `Player ${memberId}`);
-    const rawStatus = String(member?.status?.userStatus || member?.status?.state || member?.status?.status || "").trim();
-    const location = String(member?.location?.current || member?.location?.name || member?.location || "").trim();
-    const statusUntil = core.toTimestampMs(member?.status?.untill || member?.status?.until);
-    const statusDetail = rawStatus && statusUntil > state.nowMs
-      ? `${rawStatus} ${core.duration(statusUntil - state.nowMs)}`
-      : rawStatus || (member ? "Status unknown" : "Waiting for roster data");
-    const details = [
-      statusDetail,
-      member?.bsp ? `${core.formatBsp(member.bsp)} BSP` : "BSP unknown",
-      location,
-    ].filter(Boolean).join(" · ");
     const claim = core.dibsFeatureEnabled(state.settings)
       ? core.activeDibsClaim(view.dibs, memberId, state.nowMs)
       : undefined;
@@ -4297,64 +4290,40 @@
     const outcome = state.attackOutcome?.targetMemberId === memberId ? state.attackOutcome : undefined;
     const status = statusView();
     const savedKey = getStoredKey();
-    const mutationBusy = state.targetsSaving || state.targetQuickBusyId > 0 || state.dibsBusyTargetId > 0;
-    if (state.attackTargetId) {
-      const attackDibsState = claim
+    if (state.attackTargetId || state.profileTargetId) {
+      const surface = state.attackTargetId ? "attack" : "profile";
+      const compactDibsState = claim
         ? `<span class="wc-native-state wc-native-dibs ${isMine ? "mine" : "taken"}" title="${escapeHtml(dibsTitle)}">${escapeHtml(isMine ? `DIBS YOU · ${dibsRemaining}` : `DIBS ${dibsOwner} · ${dibsRemaining}`)}</span>`
         : "";
-      const attackRetaliationState = activeRetaliation
+      const compactRetaliationState = activeRetaliation
         ? `<span class="wc-native-state wc-native-retal" title="${escapeHtml(retaliationTitle)}">RETAL · ${escapeHtml(retaliationRemaining)}</span>`
         : "";
-      const attackDibsControl = savedKey && (enemyMember || claim)
-        ? dibsMarkup(targetRecord, view, claim, `attack-${memberId}`)
+      const compactDibsControl = savedKey && (enemyMember || claim)
+        ? dibsMarkup(targetRecord, view, claim, `${surface}-${memberId}`)
         : "";
-      const attackWatchControl = savedKey
+      const compactWatchControl = savedKey
         ? `<button type="button" class="wc-attack-icon${watched ? " active" : ""}" data-action="toggle-watch" data-target-member="${memberId}" data-focus-key="watch-${memberId}" aria-label="${watched ? "Unwatch" : "Watch"} ${escapeHtml(name)}" title="${watched ? "Remove from watched targets" : "Watch this target"}"${watchUnavailable || atLimit ? " disabled" : ""}>${busy ? "…" : watched ? "&#9733;" : "&#9734;"}</button>`
         : "";
+      const compactLoadoutControl = state.profileTargetId && savedKey ? loadoutMarkup(view, memberId) : "";
       const floating = state.displayMode === "floating";
       const toolsControl = `<button type="button" class="wc-button wc-attack-tools${floating ? " active" : ""}" data-action="set-display-mode" data-display-mode="${floating ? "native" : "floating"}" aria-label="${floating ? "Hide floating Warbuddy tools" : "Open floating Warbuddy tools"}" aria-pressed="${floating ? "true" : "false"}" title="${floating ? "Hide floating Warbuddy tools" : savedKey ? "Open floating Warbuddy tools" : "Open Warbuddy to connect"}">&#8942;</button>`;
-      const attackOutcomeMarkup = outcome
+      const compactOutcomeMarkup = outcome
         ? `<span class="wc-attack-result" title="${escapeHtml(outcome.label)}">${escapeHtml(outcome.dibsReleased ? "✓ Dibs released" : outcome.kind === "hospitalized" ? "✓ Releasing Dibs" : `✓ ${outcome.label}`)}</span>`
         : "";
-      const attackErrorMessage = [
+      const compactErrorMessage = [
         state.targetQuickError,
         state.dibsError && state.dibsErrorTargetId === memberId ? state.dibsError : "",
       ].filter(Boolean).join(" · ");
-      const attackError = attackErrorMessage
-        ? `<span class="wc-attack-error" role="alert" title="${escapeHtml(attackErrorMessage)}">!</span>`
+      const compactError = compactErrorMessage
+        ? `<span class="wc-attack-error" role="alert" title="${escapeHtml(compactErrorMessage)}">!</span>`
         : "";
-      return `<span class="wc-native-brand wc-attack-brand" title="Warbuddy · ${escapeHtml(status.label)}">WB</span><span class="wc-native-states">${attackRetaliationState}${attackDibsState}</span><span class="wc-native-actions">${attackDibsControl}${attackWatchControl}${toolsControl}</span>${attackOutcomeMarkup}${attackError}`;
+      return `<span class="wc-native-brand wc-attack-brand" title="Warbuddy · ${escapeHtml(status.label)}">WB</span><span class="wc-native-states">${compactRetaliationState}${compactDibsState}${compactOutcomeMarkup}${compactError}</span><span class="wc-native-actions">${compactLoadoutControl}${compactDibsControl}${compactWatchControl}${toolsControl}</span>`;
     }
-    const dibsState = claim
-      ? `<span class="wc-native-state wc-native-dibs ${isMine ? "mine" : "taken"}" title="${escapeHtml(dibsTitle)}">${escapeHtml(isMine ? `Your Dibs · ${dibsRemaining}` : `Dibsed by ${dibsOwner} · ${dibsRemaining}`)}</span>`
-      : "";
-    const retaliationState = activeRetaliation
-      ? `<span class="wc-native-state wc-native-retal" title="${escapeHtml(retaliationTitle)}">Hospitalize = retaliation · ${escapeHtml(retaliationRemaining)}</span>`
-      : "";
-    const quickError = state.targetQuickError
-      ? `<div class="wc-native-error" role="alert">${escapeHtml(state.targetQuickError)}</div>`
-      : "";
-    const dibsError = state.dibsError && state.dibsErrorTargetId === memberId
-      ? `<div class="wc-native-error" role="alert">${escapeHtml(state.dibsError)}</div>`
-      : "";
-    const outcomeMarkup = outcome
-      ? `<div class="wc-native-result"><span>${escapeHtml(outcome.label)}${outcome.dibsReleased ? " · Dibs released" : outcome.kind === "hospitalized" ? " · releasing Dibs" : " · Dibs kept"}</span><a class="wc-link" href="https://www.torn.com/factions.php?step=your&type=1#/war/rank">War roster</a></div>`
-      : "";
-    const showKeyEditor = state.displayMode !== "floating" && (!savedKey || state.keyEditorOpen || state.authTerminal);
-    const keyEditor = showKeyEditor
-      ? `${state.keyEditorError ? `<div class="wc-native-error" role="alert">${escapeHtml(state.keyEditorError)}</div>` : ""}<div class="wc-native-key"><input class="wc-input wc-secret-input" data-field="api-key" data-focus-key="api-key-native" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" aria-label="Torn API key" placeholder="${savedKey ? "Replacement Torn API key" : "Torn API key"}" value="${escapeHtml(state.keyDraft)}"${state.keySaving ? " disabled" : ""}><button type="button" class="wc-button primary" data-action="connect"${state.keySaving || mutationBusy ? " disabled" : ""}>${state.keySaving ? "Checking..." : savedKey ? "Replace" : "Connect Warbuddy"}</button>${savedKey && !state.authTerminal ? `<button type="button" class="wc-button" data-action="cancel-key"${state.keySaving ? " disabled" : ""}>Cancel</button>` : ""}</div>`
-      : "";
-    const targetControls = savedKey
-      ? `${loadoutMarkup(view, memberId)}${enemyMember || claim ? dibsMarkup(targetRecord, view, claim, `target-${memberId}`) : ""}<button type="button" class="wc-button${watched ? " primary" : ""}" data-action="toggle-watch" data-target-member="${memberId}" data-focus-key="watch-${memberId}"${watchUnavailable || atLimit ? " disabled" : ""}>${busy ? "Saving..." : watched ? "Unwatch" : "Watch"}</button>`
-      : "";
-    const layoutControl = state.displayMode === "floating"
-      ? '<button type="button" class="wc-button" data-action="set-display-mode" data-display-mode="native" title="Hide the optional floating tools panel">Native only</button>'
-      : '<button type="button" class="wc-button" data-action="set-display-mode" data-display-mode="floating" title="Show the full Warbuddy tools in a floating panel">Floating tools</button>';
-    return `<span class="wc-native-brand">Warbuddy · ${escapeHtml(status.label)}</span><span class="wc-native-target" title="${escapeHtml(name)}">${escapeHtml(name)}</span><span class="wc-native-details" title="${escapeHtml(details)}">${escapeHtml(details)}</span><span class="wc-native-states">${retaliationState}${dibsState}</span><span class="wc-native-actions">${targetControls}${layoutControl}<a class="wc-link" href="https://www.torn.com/factions.php?step=your&type=1#/war/rank">War roster</a></span>${keyEditor}${outcomeMarkup}${quickError}${dibsError}`;
+    return "";
   }
 
   function handleTargetContextAction(event) {
-    if (event.currentTarget?.classList?.contains("wc-attack-context")) event.stopPropagation();
+    if (event.currentTarget?.classList?.contains("wc-compact-context")) event.stopPropagation();
     if (handleDibsControlAction(event)) return;
     const control = event.target?.closest?.("[data-action]");
     if (!control || !event.currentTarget?.contains?.(control)) return;
@@ -4413,7 +4382,7 @@
       context.id = TARGET_CONTEXT_ID;
       context.addEventListener("click", handleTargetContextAction);
       context.addEventListener("pointerdown", (event) => {
-        if (event.currentTarget?.classList?.contains("wc-attack-context")) event.stopPropagation();
+        if (event.currentTarget?.classList?.contains("wc-compact-context")) event.stopPropagation();
       });
       context.addEventListener("input", (event) => {
         if (!event.target?.matches?.('[data-field="api-key"]')) return;
@@ -4424,7 +4393,7 @@
         if (event.key === "Enter" && event.target?.matches?.('[data-field="api-key"]')) void connectFromInput();
       });
     }
-    context.className = `warbuddy-target-context wc-${mountPoint.placement}-context`;
+    context.className = `warbuddy-target-context wc-compact-context wc-${mountPoint.placement}-context`;
     context.dataset.memberId = String(memberId);
     if (context.parentNode !== mountPoint.parent) {
       mountPoint.parent.insertBefore(context, mountPoint.before || null);
@@ -4951,8 +4920,10 @@
         || floatingPanelMissing;
     }
     if (!core.isRankedWarPageUrl(window.location.href)) return floatingPanelMissing;
+    const board = rankedWarBoardForView(view);
+    if (!board?.parentElement || board.isConnected === false) return floatingPanelMissing;
     if (!document.getElementById(PANEL_ID)) return true;
-    const anchors = enemyProfileAnchors(view);
+    const anchors = rosterProfileAnchors(view.enemyRoster, board);
     return anchors.some((anchor) => {
       const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
       const tools = Array.from(anchor.parentElement?.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`) || [])

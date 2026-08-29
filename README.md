@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.53
+
+- Replaces the wrapping profile card with one stable compact toolbar inside Torn's completed profile Actions container.
+- Waits for the verified two-faction board before mounting or decorating the ranked-war roster, eliminating provisional load-time moves.
+- Keeps roster Retal and Dibs indicators on one clipped line so live data cannot increase member-row height.
+- Leaves the compact attack HUD, optional floating tools, live connection, and backend behavior unchanged.
+
 ## 0.1.52
 
 - Replaces the full-width attack-page target strip with a tiny inline HUD beside Torn's verified defender labels.
@@ -170,6 +177,13 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.53 - 29 August 2026
+
+- Removes the profile fallbacks through broad profile wrappers and `#mainContainer`; Warbuddy now waits for connected native profile content and mounts one fixed-height toolbar once.
+- Keeps only WB, Retal/Dibs state, loadout, Dibs, Watch, outcome/error, and the floating-tools toggle on the profile surface, without duplicating the target name, status, key editor, or roster link.
+- Removes the unverified ranked-war wrapper at the page boundary and never relocates an existing verified strip while Torn temporarily rebuilds the roster DOM.
+- Restricts row decoration, filtering, status reconciliation, and priority ordering to the connected verified common board, with single-line clipped row indicators.
 
 ### 0.1.52 - 29 August 2026
 
