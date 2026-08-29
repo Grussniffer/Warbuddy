@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.54";
+  const SCRIPT_VERSION = "0.1.55";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -510,10 +510,12 @@
         catch { finish(reject, new Error(`${options.label || "Request"} returned invalid JSON`)); return; }
         const status = Number(response.status || 200);
         if (status < 200 || status >= 300) {
-          const message = body?.error?.error || body?.error?.message || body?.message || `HTTP ${status}`;
+          const nestedError = body?.error && typeof body.error === "object" ? body.error : null;
+          const topLevelError = typeof body?.error === "string" ? body.error : "";
+          const message = nestedError?.error || nestedError?.message || topLevelError || body?.message || `HTTP ${status}`;
           const error = new Error(message);
           error.status = status;
-          error.code = body?.error?.code;
+          error.code = nestedError?.code || body?.code;
           finish(reject, error);
           return;
         }
@@ -595,9 +597,11 @@
   );
   const currentEnemyRosterIsFresh = () => rosterIsFresh(currentEnemyFactionId());
   const transientTornErrorCodes = new Set([0, 5, 9, 12, 13, 14, 15, 17]);
+  const terminalCompanionErrorCodes = new Set(["FACTION_NOT_FOUND", "FACTION_NOT_MANAGED"]);
   const authenticationError = (message, properties = {}) => Object.assign(new Error(message), properties);
   const isTerminalAuthenticationError = (error) => error?.terminalAuth === true
-    || [400, 401, 403, 422].includes(Number(error?.status || 0));
+    || [400, 401, 403, 422].includes(Number(error?.status || 0))
+    || terminalCompanionErrorCodes.has(String(error?.code || "").toUpperCase());
   const syncTargetDraft = () => {
     if (state.targetsDirty && !sameTargetIds(state.targetDraft, savedTargetIds())) return;
     state.targetDraft = savedTargetIds();
@@ -1146,6 +1150,9 @@
   }
 
   function applyCompanionSession(session) {
+    const previousFactionId = String(state.session?.factionId || "");
+    const nextFactionId = String(session?.factionId || "");
+    if (previousFactionId && nextFactionId && previousFactionId !== nextFactionId) clearLiveFactionData();
     state.session = session;
     if (session.factionId && session.factionName) {
       state.factionNames.set(String(session.factionId), String(session.factionName));
@@ -1187,7 +1194,10 @@
       state.phase = "error";
       state.error = String(error?.message || "Could not connect");
       state.authTerminal = isTerminalAuthenticationError(error);
-      if (state.authTerminal) state.keyEditorOpen = true;
+      if (state.authTerminal) {
+        state.keyEditorOpen = true;
+        stopTicker();
+      }
       throw error;
     }).finally(() => {
       if (state.authPromise === authPromise) {
@@ -1854,7 +1864,7 @@
   }
 
   function hasTimeSensitiveState() {
-    if (targetPageMemberId()) return true;
+    if (targetPageMemberId()) return targetPageFactionEligible(sessionView());
     if (state.settings?.enabled === false) return false;
     if (currentEnemyFactionId()) return true;
     if ((Array.isArray(state.dibs?.claims) ? state.dibs.claims : []).length > 0) return true;
@@ -1880,11 +1890,13 @@
       ) void ensureConnected();
       if (state.phase === "connected") void recordScriptCheckIn("websocket");
       if (state.phase === "fallback") void recordScriptCheckIn("compatible");
+      const targetView = targetPageMemberId() ? sessionView() : null;
+      if (targetView && !targetPageFactionEligible(targetView)) return;
       if (
         state.profileTargetId
         && !state.attackTargetId
         && state.displayMode !== "floating"
-        && !targetPageContextRelevant(sessionView())
+        && !targetPageContextRelevant(targetView)
       ) return;
       const renderInterval = hasTimeSensitiveState() ? TICKER_INTERVAL_MS : IDLE_RENDER_INTERVAL_MS;
       if ((!isTornPda || !state.fallbackActive) && Date.now() - state.lastRenderAt >= renderInterval) {
@@ -1920,7 +1932,7 @@
     }
     if (isForeground()) {
       syncTabBrokerIdentity();
-      if (getStoredKey()) startTicker();
+      if (getStoredKey() && !state.authTerminal) startTicker();
       else stopTicker();
       ensureConnected();
       return;
@@ -2815,9 +2827,25 @@
     return `<span class="wc-loadout${open ? " open" : ""}"><button type="button" class="wc-loadout-button" data-action="toggle-loadout" data-loadout-target="${Number(memberId || 0)}" aria-label="Known loadout" aria-expanded="${open ? "true" : "false"}" title="Known loadout">&#128737;</button><span class="wc-loadout-tip">${rows}</span></span>`;
   }
 
+  function targetPageFactionEligible(view = sessionView()) {
+    const registeredFactionId = String(state.session?.factionId || "");
+    const ownFactionId = String(view?.ownFactionId || "");
+    const enemyFactionId = String(view?.enemyFactionId || "");
+    return !!registeredFactionId
+      && !!state.token
+      && state.authTerminal !== true
+      && state.session?.access === "war_companion"
+      && state.session?.enabledModules?.war_planner !== false
+      && registeredFactionId === ownFactionId
+      && state.settings?.enabled === true
+      && !!view?.alliedScore?.start
+      && !!enemyFactionId
+      && enemyFactionId !== ownFactionId;
+  }
+
   function targetPageContextRelevant(view = sessionView()) {
     const memberId = targetPageMemberId();
-    if (!memberId) return false;
+    if (!memberId || !targetPageFactionEligible(view)) return false;
     if (state.attackTargetId) return true;
     if (!state.profileTargetId) return false;
     if (savedTargetIds().includes(memberId)) return true;
@@ -3103,6 +3131,14 @@
     const view = sessionView();
     const targetPage = !!targetPageMemberId();
     const rankedWarPage = isRosterModePage(view);
+    if (targetPage && !targetPageFactionEligible(view)) {
+      document.getElementById(PANEL_ID)?.remove();
+      removeTargetContext();
+      removeInlineMemberTools();
+      removeIntegratedMount(false);
+      stopAttackOutcomeDetection();
+      return;
+    }
     if (targetPage) syncTargetPageContext(view);
     else removeTargetContext();
     if (state.displayMode !== "floating" && targetPage) {
@@ -3542,6 +3578,7 @@
     const floatingPanelMissing = state.displayMode === "floating" && !document.getElementById(PANEL_ID);
     if (targetPageMemberId()) {
       const context = document.getElementById(TARGET_CONTEXT_ID);
+      if (!targetPageFactionEligible(view)) return !!context || !!document.getElementById(PANEL_ID);
       if (!targetPageContextRelevant(view)) return !!context || floatingPanelMissing;
       const mountPoint = targetContextMountPoint();
       return !context
@@ -3755,7 +3792,11 @@
       closeDibsDetails();
       scheduleRender();
     }
-    if (!state.attackTargetId || closest?.(`#${PANEL_ID}, #${TARGET_CONTEXT_ID}`)) return;
+    if (
+      !state.attackTargetId
+      || !targetPageFactionEligible(sessionView())
+      || closest?.(`#${PANEL_ID}, #${TARGET_CONTEXT_ID}`)
+    ) return;
     const action = closest?.('button, a, [role="button"], input[type="button"], input[type="submit"]');
     const label = String(action?.innerText || action?.textContent || action?.value || action?.getAttribute?.("aria-label") || "")
       .replace(/\s+/g, " ")

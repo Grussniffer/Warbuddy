@@ -1,5 +1,12 @@
 # Warbuddy
 
+## 0.1.55
+
+- Keeps profile and attack pages completely untouched until the backend confirms a registered faction with an active ranked-war opponent.
+- Performs only the existing silent session/live-state check before eligibility is known; no target badge or floating panel is mounted while ineligible.
+- Removes an existing target-page surface immediately when the active war ends or the authenticated faction changes.
+- Stops retrying when the backend explicitly reports that the faction is not registered.
+
 ## 0.1.54
 
 - Restricts native roster integration to your authenticated faction's ranked-war page; other factions' war profiles are never decorated, sorted, or rearranged.
@@ -184,6 +191,13 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.55 - 29 August 2026
+
+- Uses the successful faction-scoped companion session as the registration proof and the backend's current opponent as the active-war proof.
+- Fails closed on profile and attack pages before those proofs are available, including when Floating was previously selected, while retaining the silent connection needed to learn when a war becomes active.
+- Stops target-page rendering and stale-surface restoration work while ineligible and cleans any previously mounted target UI when eligibility disappears.
+- Accepts both Torn's nested error format and the backend gateway's top-level error format so unmanaged-faction responses stop reconnection work immediately.
 
 ### 0.1.54 - 29 August 2026
 

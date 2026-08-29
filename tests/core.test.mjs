@@ -872,6 +872,37 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('if (isTornPda) {\n        if (!fallbackIsFresh()) state.phase = "connecting";\n        startFallbackPolling();'));
   });
 
+  it("parses nested Torn and top-level gateway errors", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const requestSource = sourceSection(source, "const requestJson", "const getStoredKey");
+    const requestError = async (body) => runInNewContext(`${requestSource}\n(async () => {
+      try {
+        await requestJson({ url: "https://backend.invalid", label: "Warbuddy login" });
+      } catch (error) {
+        return { message: error.message, status: error.status, code: error.code };
+      }
+      return null;
+    })()`, {
+      body,
+      REQUEST_TIMEOUT_MS: 15_000,
+      normalizeResponse: (value) => value,
+      sendRequest(options) {
+        options.onload({ status: 404, responseText: JSON.stringify(body) });
+      },
+      setTimeout() { return 1; },
+      clearTimeout() {},
+    });
+
+    const gateway = await requestError({ error: "Faction is not managed by this backend", code: "FACTION_NOT_FOUND" });
+    assert.deepEqual({ ...gateway }, {
+      message: "Faction is not managed by this backend",
+      status: 404,
+      code: "FACTION_NOT_FOUND",
+    });
+    const torn = await requestError({ error: { error: "Incorrect key", code: 2 } });
+    assert.deepEqual({ ...torn }, { message: "Incorrect key", status: 404, code: 2 });
+  });
+
   it("keeps compatible-mode recovery bounded while restoring missing native surfaces", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
@@ -894,7 +925,8 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes("const IDLE_RENDER_INTERVAL_MS = 10_000"));
     assert.ok(source.includes("const ROUTE_HEARTBEAT_MS = 2_000"));
     assert.ok(source.includes("const renderInterval = hasTimeSensitiveState() ? TICKER_INTERVAL_MS : IDLE_RENDER_INTERVAL_MS"));
-    assert.ok(source.includes('state.profileTargetId\n        && !state.attackTargetId\n        && state.displayMode !== "floating"\n        && !targetPageContextRelevant(sessionView())'));
+    assert.ok(source.includes("const targetView = targetPageMemberId() ? sessionView() : null"));
+    assert.ok(source.includes("if (targetView && !targetPageFactionEligible(targetView)) return"));
     assert.ok(source.includes("Date.now() - state.lastRenderAt >= renderInterval"));
     assert.ok(source.includes("setInterval(pollPageActivation, ROUTE_HEARTBEAT_MS)"));
     assert.ok(source.includes("href !== state.lastPageHref || activeSurfaceMissing()"));
@@ -903,10 +935,10 @@ describe("Warbuddy panel state", () => {
     assert.doesNotMatch(source, /setInterval\(syncPageActivation,\s*1_000\)/);
   });
 
-  it("does not periodically render an unrelated native player profile", async () => {
+  it("does not periodically render target pages before faction and war eligibility", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const tickerSource = sourceSection(source, "function startTicker", "function stopTicker");
-    const runTick = ({ displayMode = "native", relevant = false } = {}) => {
+    const runTick = ({ displayMode = "native", relevant = false, eligible = true, attackTargetId = 0 } = {}) => {
       let tick = null;
       let renders = 0;
       const context = {
@@ -914,7 +946,7 @@ describe("Warbuddy panel state", () => {
           ticker: 0,
           nowMs: 0,
           profileTargetId: 42,
-          attackTargetId: 0,
+          attackTargetId,
           displayMode,
           phase: "paused",
           fallbackActive: false,
@@ -931,6 +963,8 @@ describe("Warbuddy panel state", () => {
         sharedBrokerEnabled() { return false; },
         localSessionNeedsRefresh() { return false; },
         recordScriptCheckIn() {},
+        targetPageMemberId() { return Number(attackTargetId || 42); },
+        targetPageFactionEligible() { return eligible; },
         targetPageContextRelevant() { return relevant; },
         sessionView() { return {}; },
         hasTimeSensitiveState() { return true; },
@@ -941,7 +975,9 @@ describe("Warbuddy panel state", () => {
       return renders;
     };
 
-    assert.equal(runTick({ displayMode: "native", relevant: false }), 0);
+    assert.equal(runTick({ displayMode: "native", relevant: false, eligible: false }), 0);
+    assert.equal(runTick({ displayMode: "floating", relevant: false, eligible: false }), 0);
+    assert.equal(runTick({ attackTargetId: 42, eligible: false }), 0);
     assert.equal(runTick({ displayMode: "native", relevant: true }), 1);
     assert.equal(runTick({ displayMode: "floating", relevant: false }), 1);
   });
@@ -973,6 +1009,42 @@ describe("Warbuddy panel state", () => {
     assert.match(compactSource(connectSource), /const previousKey = getStoredKey\(\)/);
   });
 
+  it("clears live war state when authentication moves to another faction", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const applySource = sourceSection(source, "function applyCompanionSession", "function invalidateAuthentication");
+    const apply = (previousFactionId, nextFactionId) => {
+      let clearCalls = 0;
+      const context = {
+        state: {
+          session: previousFactionId ? { factionId: previousFactionId } : null,
+          factionNames: new Map(),
+          token: "",
+          lastCheckInAt: 1,
+          lastCheckInAttemptAt: 1,
+          lastCheckInTransport: "old",
+          reconnectAttempt: 2,
+          authTerminal: true,
+          error: "old",
+        },
+        clearLiveFactionData() { clearCalls += 1; },
+        loadTargetGroups() {},
+        syncTabBrokerIdentity() {},
+        result: null,
+      };
+      runInNewContext(`${applySource}\napplyCompanionSession({
+        factionId: "${nextFactionId}",
+        factionName: "Next",
+        wsSessionToken: "next-token",
+      });
+      result = state.session.factionId;`, context);
+      return { clearCalls, factionId: context.result };
+    };
+
+    assert.deepEqual(apply("41309", "41309"), { clearCalls: 0, factionId: "41309" });
+    assert.deepEqual(apply("41309", "49352"), { clearCalls: 1, factionId: "49352" });
+    assert.deepEqual(apply("", "49352"), { clearCalls: 0, factionId: "49352" });
+  });
+
   it("stops reconnect loops on terminal authentication errors and exposes key replacement", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const authenticateSource = compactSource(sourceSection(
@@ -992,9 +1064,14 @@ describe("Warbuddy panel state", () => {
     ));
     const tickerSource = compactSource(sourceSection(source, "function startTicker", "function stopTicker"));
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+    const terminalSource = sourceSection(
+      source,
+      "const transientTornErrorCodes",
+      "const syncTargetDraft"
+    );
 
     assert.match(authenticateSource, /state\.authTerminal = isTerminalAuthenticationError\(error\)/);
-    assert.match(authenticateSource, /if \(state\.authTerminal\) state\.keyEditorOpen = true/);
+    assert.match(authenticateSource, /if \(state\.authTerminal\) \{ state\.keyEditorOpen = true; stopTicker\(\); \}/);
     assert.match(reconnectSource, /!shouldRunOwnedTransport\(\) && !localSessionNeedsRefresh\(\)/);
     assert.match(reconnectSource, /if \(!getStoredKey\(\) \|\| state\.authTerminal\) return/);
     assert.match(reconnectSource, /const canAuthenticate = isForeground\(\)/);
@@ -1007,13 +1084,20 @@ describe("Warbuddy panel state", () => {
     assert.match(renderSource, /const showKeyEditor = !savedKey \|\| state\.keyEditorOpen \|\| state\.authTerminal/);
     assert.match(renderSource, /savedKey \? "Replacement Torn API key" : "Torn API key"/);
     assert.match(renderSource, /savedKey \? "Replace" : "Connect"/);
+    const terminalContext = { result: null };
+    runInNewContext(`${terminalSource}\nresult = [
+      isTerminalAuthenticationError({ status: 404, code: "FACTION_NOT_FOUND" }),
+      isTerminalAuthenticationError({ status: 404, code: "FACTION_NOT_MANAGED" }),
+      isTerminalAuthenticationError({ status: 404, code: "SOMETHING_ELSE" }),
+    ];`, terminalContext);
+    assert.deepEqual(Array.from(terminalContext.result), [true, true, false]);
   });
 
   it("does not replace an API key while the player is entering it", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
 
     assert.ok(source.includes('keyDraft: ""'));
-    assert.ok(source.includes('if (getStoredKey()) startTicker();\n      else stopTicker();'));
+    assert.ok(source.includes('if (getStoredKey() && !state.authTerminal) startTicker();\n      else stopTicker();'));
     assert.ok(source.includes('keyInput?.addEventListener("input"'));
     assert.ok(source.includes('state.keyDraft = String(event.currentTarget?.value || "")'));
     assert.ok(source.includes('value="${escapeHtml(state.keyDraft)}"'));
@@ -1442,7 +1526,7 @@ describe("Warbuddy userscript source contracts", () => {
     const heartbeatSource = compactSource(sourceSection(source, "function pollPageActivation", "function syncPageActivation"));
 
     assert.match(missingSource, /const floatingPanelMissing = state\.displayMode === "floating" && !document\.getElementById\(PANEL_ID\)/);
-    assert.match(missingSource, /if \(targetPageMemberId\(\)\) \{ const context = document\.getElementById\(TARGET_CONTEXT_ID\); if \(!targetPageContextRelevant\(view\)\) return !!context \|\| floatingPanelMissing; const mountPoint = targetContextMountPoint\(\)/);
+    assert.match(missingSource, /if \(targetPageMemberId\(\)\) \{ const context = document\.getElementById\(TARGET_CONTEXT_ID\); if \(!targetPageFactionEligible\(view\)\) return !!context \|\| !!document\.getElementById\(PANEL_ID\); if \(!targetPageContextRelevant\(view\)\) return !!context \|\| floatingPanelMissing; const mountPoint = targetContextMountPoint\(\)/);
     assert.match(missingSource, /!context \|\| !mountPoint\?\.parent \|\| context\.parentNode !== mountPoint\.parent/);
     assert.match(missingSource, /Number\(context\.dataset\?\.memberId \|\| 0\) !== targetPageMemberId\(\)/);
     assert.match(missingSource, /!context\.querySelector\?\.\("\.wc-native-brand"\) \|\| floatingPanelMissing/);
@@ -1811,7 +1895,7 @@ describe("Warbuddy userscript source contracts", () => {
     ));
     const relevanceSource = compactSource(sourceSection(
       source,
-      "function targetPageContextRelevant",
+      "function targetPageFactionEligible",
       "function attackTargetLabelsContainer"
     ));
     const compactMarkupSource = compactSource(sourceSection(
@@ -1840,6 +1924,12 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(attackMountSource, /if \(defenderCandidates\.length === 1\) return defenderCandidates\[0\]\.candidate/);
     assert.match(attackMountSource, /return locallyMatched\.length === 1 \? locallyMatched\[0\] : null/);
     assert.match(contextSource, /if \(state\.attackTargetId\) \{ const attackMount = attackTargetLabelsContainer\(\); if \(!attackMount\) return null; return \{ parent: attackMount, before: null, placement: "attack" \}/);
+    assert.match(relevanceSource, /registeredFactionId === ownFactionId/);
+    assert.match(relevanceSource, /state\.session\?\.access === "war_companion"/);
+    assert.match(relevanceSource, /state\.settings\?\.enabled === true/);
+    assert.match(relevanceSource, /!!view\?\.alliedScore\?\.start/);
+    assert.match(relevanceSource, /enemyFactionId !== ownFactionId/);
+    assert.match(relevanceSource, /!memberId \|\| !targetPageFactionEligible\(view\)/);
     assert.match(relevanceSource, /if \(state\.attackTargetId\) return true/);
     assert.match(relevanceSource, /savedTargetIds\(\)\.includes\(memberId\)/);
     assert.match(relevanceSource, /view\?\.enemyRoster/);
@@ -1882,6 +1972,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(syncContextSource, /hostPosition === "static"\) profileHost\.classList\?\.add\?\.\(PROFILE_HOST_CLASS\)/);
     assert.match(syncContextSource, /mountPoint\.parent\.insertBefore\(context, mountPoint\.before \|\| null\)/);
     assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
+    assert.match(renderSource, /if \(targetPage && !targetPageFactionEligible\(view\)\) \{ document\.getElementById\(PANEL_ID\)\?\.remove\(\); removeTargetContext\(\); removeInlineMemberTools\(\); removeIntegratedMount\(false\); stopAttackOutcomeDetection\(\); return; \}/);
     assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\); else removeTargetContext\(\)/);
     assert.match(renderSource, /if \(state\.displayMode !== "floating" && targetPage\)/);
     assert.doesNotMatch(source, /function attackTargetMarkup|Current Torn target/);
@@ -1953,7 +2044,7 @@ describe("Warbuddy userscript source contracts", () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const relevanceSource = sourceSection(
       source,
-      "function targetPageContextRelevant",
+      "function targetPageFactionEligible",
       "function attackTargetLabelsContainer"
     );
     const isRelevant = ({
@@ -1964,16 +2055,36 @@ describe("Warbuddy userscript source contracts", () => {
       retaliation = [],
       claims = [],
       loadout = false,
+      registeredFactionId = "41309",
+      ownFactionId = "41309",
+      enemyFactionId = "49352",
+      token = "session-token",
+      trackerEnabled = true,
+      warStart = "2026-08-29T12:00:00.000Z",
     } = {}) => {
       const context = {
         result: false,
         state: {
+          session: registeredFactionId ? {
+            factionId: registeredFactionId,
+            access: "war_companion",
+            enabledModules: { war_planner: true },
+          } : null,
+          token,
+          authTerminal: false,
           attackTargetId,
           profileTargetId,
-          settings: { dibsEnabled: true },
+          settings: { enabled: trackerEnabled, dibsEnabled: true },
           nowMs: 1_000,
         },
-        view: { enemyRoster, retaliation, dibs: { claims } },
+        view: {
+          ownFactionId,
+          enemyFactionId,
+          alliedScore: warStart ? { start: warStart } : null,
+          enemyRoster,
+          retaliation,
+          dibs: { claims },
+        },
         targetPageMemberId() { return Number(attackTargetId || profileTargetId || 0); },
         savedTargetIds() { return watched; },
         memberLoadout() { return loadout ? {} : undefined; },
@@ -1990,6 +2101,12 @@ describe("Warbuddy userscript source contracts", () => {
 
     assert.equal(isRelevant(), false);
     assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0 }), true);
+    assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, registeredFactionId: "" }), false);
+    assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, token: "" }), false);
+    assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, trackerEnabled: false }), false);
+    assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, warStart: "" }), false);
+    assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, enemyFactionId: "" }), false);
+    assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, registeredFactionId: "400", ownFactionId: "41309" }), false);
     assert.equal(isRelevant({ watched: [42] }), true);
     assert.equal(isRelevant({ enemyRoster: [{ member_id: 42 }] }), true);
     assert.equal(isRelevant({ retaliation: [{ attackerId: 42 }] }), true);
@@ -2280,12 +2397,10 @@ describe("Warbuddy route activation", () => {
     assert.equal(stocks.elements.has("warbuddy-panel"), false);
   });
 
-  it("mounts and persists one opt-in floating panel on supported faction and target pages", async () => {
+  it("mounts and persists one opt-in floating panel on supported faction pages", async () => {
     for (const href of [
       "https://www.torn.com/factions.php?step=your&type=1",
       "https://www.torn.com/factions.php?step=your&type=1#/war/rank",
-      "https://www.torn.com/page.php?sid=attack&user2ID=123",
-      "https://www.torn.com/profiles.php?XID=123",
     ]) {
       const page = await bootUserscript(href, {
         visibilityState: "visible",
@@ -2303,6 +2418,18 @@ describe("Warbuddy route activation", () => {
 
       page.menuCommands.get("Warbuddy: use floating panel")();
       assert.equal(page.elements.has("warbuddy-panel"), true, `${href} after switching floating`);
+      assert.equal(page.storageValues.get("warbuddy_display_mode"), "floating");
+    }
+
+    for (const href of [
+      "https://www.torn.com/page.php?sid=attack&user2ID=123",
+      "https://www.torn.com/profiles.php?XID=123",
+    ]) {
+      const page = await bootUserscript(href, {
+        visibilityState: "visible",
+        storedValues: { warbuddy_display_mode: "floating" },
+      });
+      assert.equal(page.elements.has("warbuddy-panel"), false, `${href} before backend war eligibility`);
       assert.equal(page.storageValues.get("warbuddy_display_mode"), "floating");
     }
   });
