@@ -1,5 +1,76 @@
 # Warbuddy
 
+## 0.1.67
+
+- Reuses the complete Warbuddy panel inside the expanded ranked-war accordion, including the action queue, retaliation opportunities, watched targets, roster controls, Options, and Privacy.
+- Keeps Native and Floating layouts on the same renderer and event-handler path so their features stay aligned.
+
+## 0.1.66
+
+- Replaces the ranked-war overlay with a real inline Warbuddy accordion directly after Torn's `Ranked War Filter` heading. Its open/closed state persists and expanding it reveals roster filters, Dibs-row controls, priority sorting, and the Floating-tools shortcut.
+- Gives every matched enemy Attack cell a reserved compact Dibs slot instead of inserting a wide control into Torn's fixed-width grid flow, preventing the hand button from being clipped.
+- Keeps the working profile and attack-page surfaces unchanged.
+
+## 0.1.65
+
+- Restores a useful single-line Warbuddy strip on the ranked-war roster with live state, matchup, roster counts, and All / Watched / Queue / Retals filters, without mounting the large panel or changing Torn's roster layout.
+- Adds a persistent `Dibs rows` option, enabled by default, which places compact Dibs controls beside Torn's own roster Attack actions and can be toggled from either the inline strip or Floating tools.
+- Keeps the working profile and attack-page controls unchanged.
+
+## 0.1.64
+
+- Fixes native profile and roster overlays being created at the left edge because the stylesheet's important `inset` declaration overrode their calculated coordinates.
+- Uses important viewport coordinates, hides anchored controls when their Torn heading leaves view, and repositions them on scroll or resize without changing Torn's layout.
+
+## 0.1.63
+
+- Treats an omitted tracker `enabled` value as enabled on native profile and ranked-war surfaces, matching the rest of Warbuddy instead of silently suppressing them.
+- Expands the userscript diagnostics with exact eligibility, active-war, anchor, mount, and visible-rectangle state for profile and roster surfaces.
+
+## 0.1.62
+
+- Shows the compact profile context beside the exact player name while the registered faction has an active war, without requiring that player to be watched, dibsed, or present in the enemy roster.
+- Adds a body-mounted, zero-layout ranked-war marker beside the Ranked War Filter heading, with a compact fallback when Torn changes its wrappers.
+- Removes the obsolete Actions / FairFight ancestry resolver, so native placement no longer depends on either Torn's panel structure or another userscript.
+
+## 0.1.61
+
+- Restores native enemy-roster tools on Torn's current own ranked-war page even when member rows do not contain an Attack link, while keeping the full Warbuddy panel exclusive to optional Floating mode.
+- Resolves only bounded backend-matched roster clusters in the main war content, prefers the visible member-name link, and rejects sidebar, chat, mixed-member, and two-target widget decoys.
+- Finds profile Actions semantically instead of requiring a legacy Attack URL, then mounts the compact context out of flow in the existing FairFight / Est. Stats row or a verified title-only Actions header.
+
+## 0.1.60
+
+- Restores native tools on Torn's current own ranked-war route by resolving the backend-confirmed enemy roster independently of the other faction column.
+- Requires Torn's Members / Status roster header and bounded backend-member density, so sidebar, chat, and small target widgets cannot be mistaken for the war roster.
+- Recognizes nested FairFight / Est. Stats profile headers without entering profile data tables or shifting the User Information and Actions columns.
+- Keeps unresolved native surfaces retryable as Torn finishes rendering, while optional Floating mode avoids native-DOM retry loops.
+
+## 0.1.59
+
+- Places compact profile tools inside Torn's existing full-width FairFight / Est. Stats row, right-aligned and outside normal flow, so User Information and Actions remain level.
+- Accepts only a verified stats header immediately above the two profile columns; unsafe, missing, or ambiguous layouts now show no profile control instead of creating another row.
+- Keeps long Dibs and retaliation state constrained on narrow headers while preserving inline-only native faction rosters and optional Floating mode.
+
+## 0.1.58
+
+- Keeps compact profile tools out of Basic Information, Name, and other profile data rows on classic and alternate Torn layouts.
+- Uses a verified FairFight header when present and otherwise mounts immediately above the complete profile columns or Actions panel.
+- Shows only inline Retal, Dibs, status, and target tools on ranked-war rosters in the default native layout; the full Warbuddy box is available only in optional Floating mode.
+
+## 0.1.57
+
+- Mounts compact profile tools right-aligned in the FairFight/profile header, with a stable full-width fallback above the profile columns instead of overlaying Torn's Actions icons.
+- Allows the active opponent's ranked-war faction URL to bootstrap transport, while rendering Warbuddy only after the backend confirms the registered faction and active opponent; unrelated faction routes remain untouched.
+- Recognizes Torn roster rows that omit Attack links, while requiring multiple verified member matches from both rosters before treating a board as the ranked-war roster.
+
+## 0.1.56
+
+- Anchors hospital, travel, chain, Retal, and Dibs countdowns to backend server time, so a fast or slow device clock cannot move action windows.
+- Keeps Dibs subtly unavailable as **Synchronizing server time** until an authoritative clock sample arrives, preventing an early-looking Claim button.
+- Relays the WebSocket server clock across tabs without replacing it with the connection-owning tab's local time.
+- Uses local receipt time only for connection freshness while applying server time to session expiry and active-claim decisions.
+
 ## 0.1.55
 
 - Keeps profile and attack pages completely untouched until the backend confirms a registered faction with an active ranked-war opponent.
@@ -145,7 +216,7 @@ The install URL ends in `.user.js` and includes update metadata, so supported us
 - A compact shared Dibs marker for same-location attackable enemies and enemies leaving hospital within five minutes.
 - Active retaliation windows with explicit links to Torn.
 - A compact target context inside Torn profile and attack pages, with status, Watch/Unwatch, Dibs, retaliation, and known loadout details when available.
-- One full inline control strip above the ranked-war roster by default, with independent Retal and Dibs state/actions beside each recognized enemy row's native Attack action.
+- Inline Retal, Dibs, status, and target tools beside recognized enemy roster members in the default native layout, without a separate Warbuddy box above the roster.
 - An optional floating full-tools panel; native target and roster indicators remain visible while it is enabled.
 - A stable empty state when there are no immediate actions.
 
@@ -153,7 +224,7 @@ Warbuddy displays information and links only. It never attacks, clicks, submits 
 
 ## Layout
 
-**Native (default)** embeds the target context into profile and attack pages and places the full tools in the ranked-war strip. **Floating** opens the full tools as a fixed panel while retaining native Retaliation and Dibs indicators. Switch from the target context, **Options → Layout**, or the userscript menu. The preference is stored locally and switching layouts reuses the current live session.
+**Native (default)** embeds the compact target context into profile and attack pages and adds only inline tools and indicators to ranked-war roster rows. **Floating** opens the full tools as a fixed panel while retaining native Retaliation and Dibs indicators. Switch from the target context, **Options → Layout**, or the userscript menu. The preference is stored locally and switching layouts reuses the current live session.
 
 ## Access And Privacy
 
@@ -191,6 +262,68 @@ Source files:
 Backend access is provided by `https://backend.grusmedia.no`; this repository contains no backend secrets.
 
 ## Releases
+
+### 0.1.67 - 30 August 2026
+
+- Expands the inline ranked-war section into the same full Warbuddy tool used by Floating mode while preserving its compact collapsed summary.
+- Removes the reduced inline-only control copy so future fixes and features apply consistently to both layouts.
+
+### 0.1.66 - 30 August 2026
+
+- Mounts Warbuddy as an expandable inline ranked-war section rather than an overlay.
+- Reserves space for Dibs inside enemy Attack cells and verifies missing row controls during native-surface recovery.
+
+### 0.1.65 - 30 August 2026
+
+- Expands the ranked-war marker into a no-flow inline control strip aligned to Torn's filter heading.
+- Makes row-level Dibs buttons independently configurable while preserving Retal and active-Dibs state indicators.
+
+### 0.1.64 - 30 August 2026
+
+- Positions the compact profile strip and ranked-war marker from their actual heading rectangles using fixed, important coordinates.
+- Keeps both controls attached to their headings during viewport movement and removes the body containing-block dependency.
+
+### 0.1.63 - 30 August 2026
+
+- Fixes a native-only eligibility mismatch where backend settings without a literal `enabled: true` hid profile and roster controls.
+- Reports whether each native control was created, where it mounted, and whether its Torn heading anchor was found.
+
+### 0.1.62 - 30 August 2026
+
+- Anchors profile tools from the visible `Name [ID]` heading and positions them outside Torn's layout flow.
+- Keeps the profile strip available for every player during an eligible registered war and preserves the existing attack-page HUD.
+- Guarantees a subtle `WB Live` ranked-war marker independently of optional per-member row decoration and the opt-in Floating panel.
+
+### 0.1.61 - 30 August 2026
+
+- Selectively restores board-optional native roster decoration without restoring the full native panel.
+- Supports no-Attack rows and avatar/name duplicate links, while retaining strict route, backend roster, density, mixed-member, sidebar, and chat protections.
+- Restores compact profile controls through a unique Actions heading and zero-flow stats/title host, never inside the action grid or a profile data row.
+
+### 0.1.59 - 29 August 2026
+
+- Moves profile tools from a standalone above-columns fallback into Torn's existing FairFight / Est. Stats row without changing its height or shifting the Actions column.
+- Verifies the target-specific two-column layout and immediate stats-row relationship, including real DOM text-node boundaries, and fails closed when no safe host exists.
+- Adds a temporary host class only to the active stats row and removes it on route, eligibility, or mount changes.
+
+### 0.1.58 - 29 August 2026
+
+- Removes permissive numeric profile-title matching and rejects profile tables, data rows, and information panels as compact-tool hosts.
+- Keeps FairFight header placement subtle while using verified above-columns and before-Actions fallbacks on alternate profile layouts.
+- Makes native ranked-war rendering inline-only, removes stale integrated panels, and reserves the full Warbuddy box for explicit Floating mode.
+
+### 0.1.57 - 29 August 2026
+
+- Moves the compact profile target tools into the FairFight/profile header row and uses a stable above-columns fallback, keeping Torn's Actions grid free of overlays.
+- Lets active-opponent ranked-war faction pages start authentication and transport before the session view is available, then gates roster rendering on the backend-confirmed registered faction and current opponent.
+- Supports ranked-war roster rows without Attack links and hardens board selection by requiring verified matches from both the own and enemy rosters.
+
+### 0.1.56 - 29 August 2026
+
+- Calibrates a monotonic client clock from the faction session, WebSocket envelope, and compatible snapshots, with backend time taking priority over Torn and device clocks.
+- Fails Dibs eligibility closed with a quiet synchronization explanation until the backend clock is ready, including the exact five-minute hospital boundary.
+- Preserves and relays authoritative WebSocket time through the shared-tab broker; local `generatedAt` diagnostics can no longer reset the clock offset.
+- Keeps connection and roster freshness in the local arrival-time domain, while token expiry and attack-result Dibs release use the trusted absolute clock.
 
 ### 0.1.55 - 29 August 2026
 

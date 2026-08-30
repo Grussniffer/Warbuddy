@@ -97,7 +97,7 @@
       return 0;
     }
     if (url.hostname.toLowerCase().replace(/^www\./, "") !== "torn.com") return 0;
-    if (!/^\/page\.php$/i.test(url.pathname) || String(url.searchParams.get("sid") || "").toLowerCase() !== "attack") {
+    if (!/^\/(?:page|loader)\.php$/i.test(url.pathname) || String(url.searchParams.get("sid") || "").toLowerCase() !== "attack") {
       return 0;
     }
     const memberId = Number(url.searchParams.get("user2ID") || url.searchParams.get("user2id") || 0);
@@ -166,6 +166,19 @@
       && Number.isSafeInteger(authenticatedFactionId)
       && authenticatedFactionId > 0
       && pageFactionId === authenticatedFactionId;
+  };
+
+  const rankedWarPageFactionId = (value) => {
+    if (!isRankedWarPageUrl(value)) return 0;
+    let url;
+    try {
+      url = new URL(String(value || ""), "https://www.torn.com/");
+    } catch {
+      return 0;
+    }
+    if (String(url.searchParams.get("step") || "").trim().toLowerCase() !== "profile") return 0;
+    const factionId = Number(url.searchParams.get("ID") || url.searchParams.get("id") || 0);
+    return Number.isSafeInteger(factionId) && factionId > 0 ? factionId : 0;
   };
 
   const profileMemberIdFromUrl = profilePageTargetId;
@@ -940,6 +953,7 @@
     isFactionPageUrl,
     isOwnRankedWarPageUrl,
     isRankedWarPageUrl,
+    rankedWarPageFactionId,
     isWarbuddyPageUrl,
     locationCode,
     memberAvailability,

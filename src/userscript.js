@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.55";
+  const SCRIPT_VERSION = "0.1.67";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -15,13 +15,14 @@
   const ROSTER_CONTROLS_STORAGE = "warbuddy_roster_controls_open";
   const ROSTER_FILTER_STORAGE = "warbuddy_roster_filter";
   const ROSTER_SORT_STORAGE = "warbuddy_roster_priority_sort";
+  const ROSTER_DIBS_STORAGE = "warbuddy_roster_dibs_buttons";
   const BROKER_NONCE_STORAGE = "warbuddy_connection_channel_nonce";
   const INTEGRATED_HOST_ID = "warbuddy-integrated-host";
   const INTEGRATED_WRAPPER_ID = "warbuddy-integrated-wrapper";
   const INLINE_TOOLS_CLASS = "warbuddy-inline-tools";
   const ROSTER_ACTIONS_CLASS = "warbuddy-roster-actions";
   const TARGET_CONTEXT_ID = "warbuddy-target-context";
-  const PROFILE_HOST_CLASS = "warbuddy-profile-context-host";
+  const ROSTER_CONTEXT_ID = "warbuddy-roster-context";
   const SAFE_INTEGRATED_PARENT_DISPLAYS = new Set(["block", "flow-root", "list-item"]);
   const STATUS_CELL_CLASS = "warbuddy-status-cell";
   const STATUS_DETAIL_CLASS = "warbuddy-status-detail";
@@ -38,6 +39,7 @@
   const IDLE_RENDER_INTERVAL_MS = 10_000;
   const ROUTE_HEARTBEAT_MS = 2_000;
   const DATA_STALE_MS = 45_000;
+  const CLOCK_BACKWARD_TOLERANCE_MS = 250;
   const BROKER_NONCE_RECHECK_MS = 2_000;
   const SCRIPT_CHECK_IN_INTERVAL_MS = 10 * 60 * 1000;
   const SCRIPT_CHECK_IN_RETRY_MS = 60_000;
@@ -157,10 +159,14 @@
     nowMs: Date.now(),
     clockOffsetMs: 0,
     clockSource: "device",
+    clockReady: false,
+    clockAnchorServerMs: 0,
+    clockAnchorMonotonicMs: Number.NaN,
     displayMode: core.normalizeDisplayMode(storage.get(DISPLAY_MODE_STORAGE, "")),
     rosterControlsOpen: String(storage.get(ROSTER_CONTROLS_STORAGE, "")) === "1",
     rosterFilter: core.normalizeRosterFilter(storage.get(ROSTER_FILTER_STORAGE, "")),
     rosterPrioritySort: String(storage.get(ROSTER_SORT_STORAGE, "")) === "1",
+    rosterDibsButtons: String(storage.get(ROSTER_DIBS_STORAGE, "1")) !== "0",
     privacyOpen: false,
     targetsOpen: false,
     targetDraft: [],
@@ -190,6 +196,7 @@
     active: false,
     renderQueued: false,
     renderFrame: 0,
+    overlayFrame: 0,
     lastSocketErrorAt: "",
     lastSocketClose: null,
     sharedSocketOpen: false,
@@ -239,6 +246,8 @@
     #${PANEL_ID}.wc-integrated-inline.wc-roster-mode { position:relative !important; inset:auto !important; width:100%; max-width:none; max-height:none; margin:0; border-color:#4d612a; border-radius:3px; box-shadow:0 2px 8px rgba(0,0,0,.3); }
     #${PANEL_ID}.wc-roster-mode .wc-body { max-height:none; overflow:visible; overscroll-behavior:auto; border-top:1px solid #3f4f25; background:#202020; }
     #${PANEL_ID}.wc-roster-mode:not(.wc-roster-open) .wc-body { display:none; }
+    #${PANEL_ID}.wc-inline-accordion { margin:0; border:0; border-radius:0; box-shadow:none; }
+    #${PANEL_ID}.wc-inline-accordion .wc-body { display:block !important; border-top:1px solid #3f4f25; padding:7px; }
     #${PANEL_ID} .wc-roster-summary { display:flex; min-height:34px; align-items:center; gap:8px; background:linear-gradient(180deg,#5a7625,#41571a); color:#f4f4f5; padding:0 8px; }
     #${PANEL_ID} .wc-roster-summary-button { display:flex; min-width:0; flex:1; align-items:center; gap:7px; border:0; background:transparent; color:inherit; padding:7px 0; text-align:left; font:inherit; cursor:pointer; }
     #${PANEL_ID} .wc-roster-chevron { width:10px; flex:0 0 10px; color:#f4f4f5; }
@@ -277,7 +286,11 @@
     .${INLINE_TOOLS_CLASS} .wc-inline-watch.active { color:#fbbf24; }
     .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
-    .${ROSTER_ACTIONS_CLASS} { display:inline-flex; min-width:0; max-width:min(190px,45vw); flex-wrap:nowrap; align-items:center; justify-content:flex-end; gap:3px; overflow:hidden; margin-right:5px; vertical-align:middle; font:10px/1.2 Arial,Helvetica,sans-serif; }
+    .warbuddy-roster-action-cell { position:relative !important; }
+    .${ROSTER_ACTIONS_CLASS} { position:absolute; left:2px; top:50%; z-index:4; display:inline-flex; width:20px; height:20px; align-items:center; justify-content:center; overflow:visible; margin:0; transform:translateY(-50%); font:9px/1.2 Arial,Helvetica,sans-serif; }
+    .${ROSTER_ACTIONS_CLASS}:empty { display:none; }
+    .${ROSTER_ACTIONS_CLASS} .wc-dibs { width:20px !important; height:20px !important; border-color:#52525b !important; background:#18181b !important; }
+    a.warbuddy-attack-has-dibs { box-sizing:border-box !important; padding-left:24px !important; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-state { display:inline-flex; min-height:18px; align-items:center; border:1px solid #52525b; border-radius:3px; padding:1px 4px; background:#27272a; color:#e4e4e7; font-weight:700; white-space:nowrap; }
     .${ROSTER_ACTIONS_CLASS} .wc-native-state { min-width:0; max-width:86px; flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-retal { border-color:#0284c7; background:#0c4a6e; color:#e0f2fe; }
@@ -323,8 +336,22 @@
     #${TARGET_CONTEXT_ID} .wc-loadout-value { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #${TARGET_CONTEXT_ID}.wc-compact-context { position:static !important; inset:auto !important; z-index:auto; min-width:0; flex-wrap:nowrap; align-items:center; gap:2px; border:1px solid rgba(113,113,122,.65); border-left-width:1px; border-radius:4px; background:rgba(24,24,27,.72); box-shadow:none; font-size:10px; line-height:1.2; vertical-align:middle; }
     #${TARGET_CONTEXT_ID}.wc-attack-context { display:inline-flex; width:auto; max-width:min(260px,100%); flex:0 1 auto; overflow:hidden; margin:1px 0 1px 4px; padding:1px 3px; }
-    .${PROFILE_HOST_CLASS} { position:relative !important; }
-    #${TARGET_CONTEXT_ID}.wc-profile-context { position:absolute !important; inset:auto 6px 6px auto !important; z-index:6; display:inline-flex; width:auto; max-width:calc(100% - 12px); height:26px; max-height:26px; flex:0 1 auto; overflow:visible; margin:0; padding:2px 3px; }
+    body > #${TARGET_CONTEXT_ID}.wc-profile-context { position:fixed !important; inset:auto; z-index:2147483000 !important; display:inline-flex; width:max-content; max-width:min(340px,calc(100vw - 16px)); min-height:18px; max-height:20px; flex:0 1 auto; overflow:visible; margin:0; padding:0 2px; transform:none; vertical-align:middle; }
+    :is(body > #${TARGET_CONTEXT_ID}.wc-profile-context).wc-native-overlay-fallback { position:fixed !important; inset:58px 12px auto auto !important; }
+    #${ROSTER_CONTEXT_ID}.wc-native-roster-context { position:relative !important; inset:auto !important; z-index:5 !important; display:block; box-sizing:border-box; width:100%; min-width:0; max-width:100%; margin:5px 0; overflow:visible; border:1px solid #526b24; border-radius:3px; background:#202020; color:#e4e4e7; box-shadow:0 1px 4px rgba(0,0,0,.3); font:700 10px/1.25 Arial,Helvetica,sans-serif; }
+    #${ROSTER_CONTEXT_ID} > summary { display:flex; min-height:32px; align-items:center; gap:6px; overflow:hidden; background:linear-gradient(180deg,#5a7625,#41571a); color:#f4f4f5; padding:5px 8px; cursor:pointer; list-style:none; user-select:none; }
+    #${ROSTER_CONTEXT_ID} > summary::-webkit-details-marker { display:none; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-chevron { flex:0 0 auto; font-size:11px; transition:transform .12s ease; }
+    #${ROSTER_CONTEXT_ID}[open] .wc-native-roster-chevron { transform:rotate(90deg); }
+    #${ROSTER_CONTEXT_ID} .wc-native-brand { flex:0 0 auto; color:#f4f4f5; font-size:11px; font-weight:900; letter-spacing:.02em; }
+    #${ROSTER_CONTEXT_ID} .wc-native-beta { flex:0 0 auto; border-radius:2px; background:rgba(0,0,0,.3); color:#ecfccb; padding:1px 3px; font-size:7px; font-weight:900; text-transform:uppercase; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-matchup { min-width:0; flex:1 1 auto; overflow:hidden; color:#e4e4e7; text-overflow:ellipsis; white-space:nowrap; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-status { display:inline-flex; min-width:0; flex:0 0 auto; align-items:center; gap:3px; overflow:hidden; color:#e4e4e7; text-overflow:ellipsis; white-space:nowrap; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-counts { display:inline-flex; flex:0 0 auto; align-items:center; gap:7px; color:#e4e4e7; white-space:nowrap; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-panel-host { display:block; width:100%; min-width:0; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-filter, #${ROSTER_CONTEXT_ID} .wc-native-roster-toggle, #${ROSTER_CONTEXT_ID} .wc-button { display:inline-flex; min-width:24px; min-height:24px; flex:0 0 auto; align-items:center; justify-content:center; border:1px solid #52525b; border-radius:3px; background:#27272a; color:#d4d4d8; padding:4px 7px; font:700 10px/1 Arial,Helvetica,sans-serif; cursor:pointer; white-space:nowrap; }
+    #${ROSTER_CONTEXT_ID} .wc-native-roster-filter.active, #${ROSTER_CONTEXT_ID} .wc-native-roster-toggle.active { border-color:#84a83b; background:#405719; color:#fff; }
+    #${ROSTER_CONTEXT_ID} :is(.wc-button,.wc-native-roster-filter,.wc-native-roster-toggle):hover, #${ROSTER_CONTEXT_ID} :is(.wc-button,.wc-native-roster-filter,.wc-native-roster-toggle):focus-visible { border-color:#71717a; color:#f4f4f5; outline:0; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-brand { display:inline-flex; height:20px; align-items:center; color:#9fbd57; font-size:9px; font-weight:900; letter-spacing:.02em; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-states { min-width:0; max-width:100%; flex:1 1 auto; flex-wrap:nowrap; gap:2px; overflow:hidden; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-native-actions { min-width:0; flex:0 0 auto; flex-wrap:nowrap; gap:2px; margin-left:auto; }
@@ -337,9 +364,13 @@
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-loadout-button { width:20px; height:20px; border-color:transparent; background:transparent; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-result { display:inline-flex; min-width:0; min-height:20px; max-width:150px; flex:0 1 auto; align-items:center; overflow:hidden; color:#86efac; padding:1px 3px; font-size:9px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
     #${TARGET_CONTEXT_ID}.wc-compact-context .wc-attack-error { display:inline-flex; width:18px; height:18px; flex:0 0 auto; align-items:center; justify-content:center; border:1px solid #b91c1c; border-radius:50%; color:#fca5a5; font-size:10px; font-weight:900; cursor:help; }
-    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-tip { top:auto; bottom:calc(100% + 4px); }
-    @media (max-width:620px) { #${TARGET_CONTEXT_ID} .wc-native-details { order:5; flex-basis:100%; white-space:normal; } #${TARGET_CONTEXT_ID} .wc-native-states { margin-left:auto; } .${ROSTER_ACTIONS_CLASS} .wc-native-state { max-width:115px; overflow:hidden; text-overflow:ellipsis; } }
-    @media (pointer:coarse) { #${TARGET_CONTEXT_ID} .wc-button, #${TARGET_CONTEXT_ID} .wc-link, #${TARGET_CONTEXT_ID} .wc-loadout-button, #${TARGET_CONTEXT_ID} .wc-attack-icon, :is(#${TARGET_CONTEXT_ID}, .${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-dibs { min-width:36px; min-height:36px; } #${TARGET_CONTEXT_ID}.wc-profile-context { height:44px; max-height:44px; } }
+    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-attack-brand { height:18px; font-size:8px; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-native-state { min-height:18px; max-height:18px; max-width:120px; padding:0 3px; font-size:8px; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-button, #${TARGET_CONTEXT_ID}.wc-profile-context .wc-attack-icon, #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-button, #${TARGET_CONTEXT_ID}.wc-profile-context .wc-dibs { min-width:18px; min-height:18px; width:18px; height:18px; padding:0 2px; }
+    #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-tip { top:calc(100% + 4px); bottom:auto; }
+    @media (max-width:820px) { #${ROSTER_CONTEXT_ID} .wc-native-roster-status-label { display:none; } }
+    @media (max-width:620px) { #${TARGET_CONTEXT_ID} .wc-native-details { order:5; flex-basis:100%; white-space:normal; } #${TARGET_CONTEXT_ID} .wc-native-states { margin-left:auto; } body > #${TARGET_CONTEXT_ID}.wc-profile-context { max-width:min(260px,calc(100vw - 16px)); } #${TARGET_CONTEXT_ID}.wc-profile-context .wc-native-state { max-width:80px; } #${ROSTER_CONTEXT_ID} .wc-native-roster-matchup, #${ROSTER_CONTEXT_ID} .wc-native-beta { display:none; } #${ROSTER_CONTEXT_ID} .wc-native-roster-counts { gap:4px; font-size:9px; } }
+    @media (pointer:coarse) { #${TARGET_CONTEXT_ID} .wc-button, #${TARGET_CONTEXT_ID} .wc-link, #${TARGET_CONTEXT_ID} .wc-loadout-button, #${TARGET_CONTEXT_ID} .wc-attack-icon, :is(#${TARGET_CONTEXT_ID}, .${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-dibs { min-width:36px; min-height:36px; } body > #${TARGET_CONTEXT_ID}.wc-profile-context { min-height:20px; max-height:20px; } #${TARGET_CONTEXT_ID}.wc-profile-context .wc-button, #${TARGET_CONTEXT_ID}.wc-profile-context .wc-attack-icon, #${TARGET_CONTEXT_ID}.wc-profile-context .wc-loadout-button, #${TARGET_CONTEXT_ID}.wc-profile-context .wc-dibs { min-width:20px; min-height:20px; width:20px; height:20px; } #${ROSTER_CONTEXT_ID} .wc-button { min-width:24px; min-height:24px; width:24px; height:24px; } }
     .${STATUS_CELL_CLASS} { position:relative !important; color:transparent !important; text-shadow:none !important; }
     .${STATUS_CELL_CLASS} > :not(.${STATUS_DETAIL_CLASS}) { visibility:hidden !important; }
     .${STATUS_DETAIL_CLASS} { position:absolute; inset:0; z-index:2; display:flex; align-items:center; justify-content:center; color:var(--user-status-blue-color,#22d3ee) !important; font:inherit; font-weight:700; line-height:1.1; text-align:center; white-space:nowrap; visibility:visible !important; }
@@ -572,23 +603,26 @@
     : isForeground();
   const localSessionNeedsRefresh = () => {
     if (!isForeground()) return false;
+    return sessionTokenNeedsRefresh();
+  };
+  const sessionTokenNeedsRefresh = () => {
     const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
-    return !state.session || !state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000;
+    return !state.session || !state.token || !Number.isFinite(expiresAt) || expiresAt <= trustedNowMs() + 30_000;
   };
   const directSocketIsOpen = () => Number(state.socket?.readyState) === 1;
   const socketIsOpen = () => directSocketIsOpen()
     || (sharedBrokerEnabled() && !tabBroker.isLeader() && state.sharedSocketOpen);
   const dataIsStale = () => socketIsOpen()
     ? state.lastLiveDataAt < state.socketOpenedAt
-    : state.lastLiveDataAt > 0 && state.nowMs - state.lastLiveDataAt > DATA_STALE_MS;
-  const liveDataAgeMs = () => Math.max(0, state.nowMs - Number(state.lastLiveDataAt || 0));
+    : state.lastLiveDataAt > 0 && Date.now() - state.lastLiveDataAt > DATA_STALE_MS;
+  const liveDataAgeMs = () => Math.max(0, Date.now() - Number(state.lastLiveDataAt || 0));
   const rosterIsFresh = (factionId) => {
     const normalizedFactionId = String(factionId || "");
     if (!normalizedFactionId) return false;
     if (!transportIsLive() || !isOnline()) return false;
     const updatedAt = Number(state.rosterDataAt.get(normalizedFactionId) || 0);
     if (socketIsOpen()) return updatedAt >= state.socketOpenedAt;
-    return updatedAt > 0 && state.nowMs - updatedAt <= DATA_STALE_MS;
+    return updatedAt > 0 && Date.now() - updatedAt <= DATA_STALE_MS;
   };
   const currentEnemyFactionId = () => core.inferEnemyFactionId(
     String(state.session?.factionId || ""),
@@ -693,13 +727,16 @@
     state.targetQuickError = "";
     closeDibsDetails();
   };
-  const isRosterModePage = (view = null) => core.isOwnRankedWarPageUrl(
-    window.location.href,
-    view?.ownFactionId || state.session?.factionId || 0
-  );
+  const isRosterBootstrapPage = () => core.isRankedWarPageUrl(window.location.href);
+  const isRosterModePage = (view = null) => {
+    const ownFactionId = view?.ownFactionId || state.session?.factionId || 0;
+    if (core.isOwnRankedWarPageUrl(window.location.href, ownFactionId)) return true;
+    if (!view || !targetPageFactionEligible(view)) return false;
+    return Number(core.rankedWarPageFactionId(window.location.href) || 0) === Number(view.enemyFactionId || 0);
+  };
   const targetPageMemberId = () => Number(state.attackTargetId || state.profileTargetId || 0);
   const hasWarbuddySurface = () => !!targetPageMemberId()
-    || isRosterModePage()
+    || isRosterBootstrapPage()
     || state.displayMode === "floating";
   const isForeground = () => state.active
     && hasWarbuddySurface()
@@ -826,14 +863,48 @@
     }
   }
 
-  function trustedNowMs() {
-    return tornPageNowMs() || (Date.now() + Number(state.clockOffsetMs || 0));
+  function monotonicNowMs() {
+    try {
+      const value = Number(globalThis.performance?.now?.());
+      return Number.isFinite(value) && value >= 0 ? value : Number.NaN;
+    } catch {
+      return Number.NaN;
+    }
   }
 
-  function syncTrustedClock(value, source) {
-    const offsetMs = core.trustedClockOffset(value, Date.now());
+  function trustedNowMs() {
+    if (state.clockReady) {
+      const monotonicNow = monotonicNowMs();
+      const monotonicAnchor = Number(state.clockAnchorMonotonicMs);
+      const monotonicElapsed = monotonicNow - monotonicAnchor;
+      if (Number.isFinite(monotonicNow) && Number.isFinite(monotonicAnchor) && Number.isFinite(monotonicElapsed) && monotonicElapsed >= 0) {
+        return Number(state.clockAnchorServerMs || 0) + monotonicElapsed;
+      }
+      return Date.now() + Number(state.clockOffsetMs || 0);
+    }
+    return tornPageNowMs() || Date.now();
+  }
+
+  function syncTrustedClock(value, source, sampleDeviceNowMs = Date.now()) {
+    const serverSampleMs = core.toTimestampMs(value);
+    const sampledAt = Number(sampleDeviceNowMs);
+    const receivedAt = Date.now();
+    if (
+      serverSampleMs < Date.UTC(2020, 0, 1)
+      || serverSampleMs > Date.UTC(2100, 0, 1)
+      || !Number.isFinite(sampledAt)
+    ) return false;
+    const offsetMs = core.trustedClockOffset(serverSampleMs, sampledAt, Number.POSITIVE_INFINITY);
     if (!Number.isFinite(offsetMs)) return false;
-    state.clockOffsetMs = offsetMs;
+    const elapsedSinceSample = Math.min(REQUEST_TIMEOUT_MS, Math.max(0, receivedAt - sampledAt));
+    const candidateServerNowMs = serverSampleMs + elapsedSinceSample;
+    const currentServerNowMs = state.clockReady ? trustedNowMs() : 0;
+    if (state.clockReady && candidateServerNowMs + CLOCK_BACKWARD_TOLERANCE_MS < currentServerNowMs) return false;
+    const serverNowMs = state.clockReady ? Math.max(candidateServerNowMs, currentServerNowMs) : candidateServerNowMs;
+    state.clockOffsetMs = serverNowMs - receivedAt;
+    state.clockAnchorServerMs = serverNowMs;
+    state.clockAnchorMonotonicMs = monotonicNowMs();
+    state.clockReady = true;
     state.clockSource = String(source || "backend");
     state.nowMs = trustedNowMs();
     return true;
@@ -843,6 +914,7 @@
     state.integratedDecorationsActive = false;
     document.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`).forEach((element) => element.remove());
     document.querySelectorAll?.(`.${ROSTER_ACTIONS_CLASS}`).forEach((element) => element.remove());
+    document.querySelectorAll?.(".warbuddy-roster-action-cell").forEach((element) => element.classList.remove("warbuddy-roster-action-cell"));
     document.querySelectorAll?.(`.${STATUS_CELL_CLASS}, .${STATUS_MISMATCH_CLASS}`).forEach((cell) => {
       cell.classList.remove(STATUS_CELL_CLASS, STATUS_MISMATCH_CLASS);
       cell.querySelectorAll?.(`.${STATUS_DETAIL_CLASS}`).forEach((detail) => detail.remove());
@@ -861,7 +933,7 @@
       parent.classList.remove("warbuddy-roster-sort-parent");
     });
     document.querySelectorAll?.("[data-warbuddy-attack-state]").forEach((link) => {
-      link.classList.remove("warbuddy-attack-dibs-mine", "warbuddy-attack-dibs-taken", "warbuddy-attack-retal");
+      link.classList.remove("warbuddy-attack-dibs-mine", "warbuddy-attack-dibs-taken", "warbuddy-attack-retal", "warbuddy-attack-has-dibs");
       link.title = String(link.title || "").replace(/\s*-?\s*Warbuddy:.*$/i, "").trim();
       delete link.dataset.warbuddyAttackState;
     });
@@ -881,7 +953,10 @@
 
   function removeTargetContext() {
     document.getElementById(TARGET_CONTEXT_ID)?.remove();
-    document.querySelectorAll?.(`.${PROFILE_HOST_CLASS}`).forEach((host) => host.classList.remove(PROFILE_HOST_CLASS));
+  }
+
+  function removeNativeRosterContext() {
+    document.getElementById(ROSTER_CONTEXT_ID)?.remove();
   }
 
   function rosterProfileAnchors(roster, root = document) {
@@ -928,15 +1003,73 @@
     const memberId = core.profileMemberIdFromUrl(anchor?.getAttribute?.("href") || anchor?.href || "");
     if (!memberId) return null;
     let candidate = anchor?.parentElement;
+    let structuralRow = null;
     for (let depth = 0; candidate && depth < 10; depth += 1, candidate = candidate.parentElement) {
-      if (candidate === document.body || candidate === document.documentElement) return null;
-      const profileLinks = Array.from(candidate.querySelectorAll?.("a[href*='profiles.php']") || [])
-        .filter((link) => core.profileMemberIdFromUrl(link.getAttribute?.("href") || link.href || "") > 0);
-      if (profileLinks.length > 1) return null;
-      if (profileLinks.length === 1 && rankedWarAttackLinkForMember(candidate, memberId)) return candidate;
+      if (candidate === document.body || candidate === document.documentElement) break;
+      const profileIds = new Set(Array.from(candidate.querySelectorAll?.("a[href*='profiles.php']") || [])
+        .map((link) => core.profileMemberIdFromUrl(link.getAttribute?.("href") || link.href || ""))
+        .filter((profileId) => profileId > 0));
+      if (profileIds.size > 1 || (profileIds.size === 1 && !profileIds.has(memberId))) break;
+      if (!profileIds.size) continue;
+      structuralRow = candidate;
+      if (rankedWarAttackLinkForMember(candidate, memberId)) return candidate;
     }
 
-    return null;
+    return structuralRow;
+  }
+
+  function rankedWarMainContent() {
+    const scope = document.querySelector?.("#mainContainer, main, [role='main']") || null;
+    if (!scope || scope === document.body || scope === document.documentElement) return null;
+    return scope;
+  }
+
+  function rankedWarEnemyRowEntries(roster, root = rankedWarMainContent()) {
+    const members = new Set((Array.isArray(roster) ? roster : [])
+      .map((member) => Number(member?.member_id || 0))
+      .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
+    if (!members.size || !root?.querySelectorAll || root === document.body || root === document.documentElement) return [];
+    const excludedSelector = [
+      "#" + PANEL_ID,
+      "#" + INTEGRATED_HOST_ID,
+      "#" + TARGET_CONTEXT_ID,
+      "." + INLINE_TOOLS_CLASS,
+      "." + ROSTER_ACTIONS_CLASS,
+      "aside",
+      "[role='complementary']",
+      "[class*='chat' i]",
+      "[id*='chat' i]",
+      "[class*='sidebar' i]",
+      "[id*='sidebar' i]",
+    ].join(", ");
+    const entriesByMember = new Map();
+    for (const anchor of Array.from(root.querySelectorAll("a[href*='profiles.php']") || [])) {
+      if (anchor.closest?.(excludedSelector)) continue;
+      const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
+      if (!members.has(memberId)) continue;
+      const row = rankedWarRowForAnchor(anchor);
+      if (!row || row.isConnected === false || !root.contains?.(row) || row.closest?.(excludedSelector)) continue;
+      const rowProfileIds = new Set(Array.from(row.querySelectorAll?.("a[href*='profiles.php']") || [])
+        .map((profileAnchor) => core.profileMemberIdFromUrl(profileAnchor.getAttribute?.("href") || profileAnchor.href || ""))
+        .filter((profileId) => profileId > 0));
+      if (rowProfileIds.size !== 1 || !rowProfileIds.has(memberId)) continue;
+      let memberRows = entriesByMember.get(memberId);
+      if (!memberRows) {
+        memberRows = new Map();
+        entriesByMember.set(memberId, memberRows);
+      }
+      const label = String(anchor.textContent || anchor.getAttribute?.("aria-label") || anchor.getAttribute?.("title") || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const anchorScore = label ? 2 : anchor.querySelector?.("img, picture, svg") ? 0 : 1;
+      const existing = memberRows.get(row);
+      if (!existing || anchorScore > existing.anchorScore) {
+        memberRows.set(row, { anchor, memberId, row, anchorScore });
+      }
+    }
+    return Array.from(entriesByMember.values())
+      .flatMap((memberRows) => Array.from(memberRows.values()))
+      .map(({ anchor, memberId, row }) => ({ anchor, memberId, row }));
   }
 
   function rankedWarOwnRowForAnchor(anchor) {
@@ -964,41 +1097,162 @@
     return null;
   }
 
-  function rankedWarBoardForView(view) {
-    const expectedMembers = Number(view?.ownRoster?.length || 0) + Number(view?.enemyRoster?.length || 0);
-    const invalidParents = new Set(["TABLE", "TBODY", "THEAD", "TFOOT", "TR"]);
-    const ownAnchors = rosterProfileAnchors(view?.ownRoster).slice(0, 16);
-    const enemyAnchors = enemyProfileAnchors(view).slice(0, 8);
-    const checkedBoards = new Set();
-    let best = null;
-    let bestProfileCount = Number.POSITIVE_INFINITY;
-    for (const ownAnchor of ownAnchors) {
-      const ownRow = rankedWarOwnRowForAnchor(ownAnchor);
-      if (!ownRow) continue;
-      for (const enemyAnchor of enemyAnchors) {
-        const enemyRow = rankedWarRowForAnchor(enemyAnchor);
-        if (!enemyRow) continue;
-        let board = lowestCommonAncestor(ownRow, enemyRow);
-        if (!board || board === document.body || board === document.documentElement) continue;
-        while (board?.parentElement && invalidParents.has(String(board.parentElement.tagName || "").toUpperCase())) {
-          board = board.parentElement;
-        }
-        if (!board?.parentElement || board === document.body || board === document.documentElement) continue;
-        if (!board.contains?.(ownRow) || !board.contains?.(enemyRow)) continue;
-        if (checkedBoards.has(board)) continue;
-        checkedBoards.add(board);
-        const profileCount = Array.from(board.querySelectorAll?.("a[href*='profiles.php']") || [])
-          .filter((anchor) => core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "") > 0)
-          .length;
-        if (profileCount < 2 || profileCount > Math.max(220, expectedMembers + 24)) continue;
-        if (profileCount < bestProfileCount) {
-          best = board;
-          bestProfileCount = profileCount;
-        }
+  function hasRankedWarRosterSignature(root) {
+    const candidates = [root, root?.previousElementSibling].filter(Boolean);
+    return candidates.some((candidate) => {
+      const text = String(candidate?.textContent || "").replace(/\s+/g, " ").trim();
+      return /\bmembers?\b/i.test(text)
+        && /\bstatus\b/i.test(text)
+        && /\b(?:level|est|score)\b/i.test(text);
+    });
+  }
+
+  function rankedWarRosterCluster(roster, rowForAnchor = rankedWarRowForAnchor) {
+    const memberIds = new Set((Array.isArray(roster) ? roster : [])
+      .map((member) => Number(member?.member_id || 0))
+      .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
+    if (!memberIds.size) return null;
+    const excludedSelector = [
+      "#" + PANEL_ID,
+      "#" + INTEGRATED_HOST_ID,
+      "#" + TARGET_CONTEXT_ID,
+      "." + INLINE_TOOLS_CLASS,
+      "." + ROSTER_ACTIONS_CLASS,
+      "aside",
+      "[role='complementary']",
+      "[class*='chat' i]",
+      "[id*='chat' i]",
+      "[class*='sidebar' i]",
+      "[id*='sidebar' i]",
+    ].join(", ");
+    const mainScope = document.querySelector?.("#mainContainer, main, [role='main']") || null;
+    const entries = Array.from(document.querySelectorAll?.("a[href*='profiles.php']") || [])
+      .filter((anchor) => !anchor.closest?.(excludedSelector))
+      .filter((anchor) => !mainScope || mainScope.contains?.(anchor))
+      .map((anchor) => {
+        const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
+        if (!memberIds.has(memberId)) return null;
+        const row = rowForAnchor(anchor);
+        if (!row || (mainScope && !mainScope.contains?.(row))) return null;
+        const rowProfileIds = new Set(Array.from(row.querySelectorAll?.("a[href*='profiles.php']") || [])
+          .map((profileAnchor) => core.profileMemberIdFromUrl(profileAnchor.getAttribute?.("href") || profileAnchor.href || ""))
+          .filter((profileId) => profileId > 0));
+        if (rowProfileIds.size !== 1 || !rowProfileIds.has(memberId)) return null;
+        return { anchor, memberId, row };
+      })
+      .filter(Boolean);
+    const requiredMatches = Math.min(2, memberIds.size);
+    if (new Set(entries.map((entry) => entry.memberId)).size < requiredMatches) return null;
+
+    const candidates = new Set();
+    for (const { row } of entries) {
+      for (let candidate = row.parentElement, depth = 0; candidate && depth < 8; depth += 1, candidate = candidate.parentElement) {
+        if (candidate === document.body || candidate === document.documentElement) break;
+        if (mainScope && !mainScope.contains?.(candidate)) break;
+        if (candidate === mainScope) break;
+        if (candidate.closest?.(excludedSelector)) break;
+        candidates.add(candidate);
       }
     }
-    if (best) return best;
-    return null;
+
+    let best = null;
+    for (const root of candidates) {
+      const matches = new Map();
+      for (const entry of entries) {
+        if (root.contains?.(entry.row) && !matches.has(entry.memberId)) matches.set(entry.memberId, entry);
+      }
+      if (matches.size < requiredMatches) continue;
+      if (!hasRankedWarRosterSignature(root)) continue;
+      const profileLinks = Array.from(root.querySelectorAll?.("a[href*='profiles.php']") || []);
+      const profileIds = new Set(profileLinks
+        .map((anchor) => core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || ""))
+        .filter((memberId) => memberId > 0));
+      const profileIdLimit = Math.min(
+        Math.max(160, memberIds.size + 32),
+        Math.max((matches.size * 4), matches.size + 16)
+      );
+      const profileLinkLimit = Math.min(
+        Math.max(240, (memberIds.size * 3) + 32),
+        Math.max((profileIds.size * 3), (matches.size * 4) + 16)
+      );
+      if (
+        profileIds.size < matches.size
+        || profileIds.size > profileIdLimit
+        || profileLinks.length > profileLinkLimit
+      ) continue;
+      const score = {
+        root,
+        matches: matches.size,
+        profileCount: profileIds.size,
+      };
+      if (
+        !best
+        || score.matches > best.matches
+        || (
+          score.matches === best.matches
+          && (
+            score.profileCount < best.profileCount
+            || (score.profileCount === best.profileCount && best.root.contains?.(score.root))
+          )
+        )
+      ) best = score;
+    }
+    return best?.root || null;
+  }
+
+  function rankedWarBoardForView(view) {
+    return rankedWarRosterCluster(view?.enemyRoster, rankedWarRowForAnchor);
+  }
+
+  function rankedWarUnsignedRosterCluster(roster) {
+    const mainScope = rankedWarMainContent();
+    if (!mainScope) return null;
+    const entries = rankedWarEnemyRowEntries(roster, mainScope);
+    const minimumMatches = 3;
+    if (new Set(entries.map((entry) => entry.memberId)).size < minimumMatches) return null;
+    const candidates = new Set();
+    for (const { row } of entries) {
+      for (let candidate = row.parentElement, depth = 0; candidate && depth < 8; depth += 1, candidate = candidate.parentElement) {
+        if (candidate === mainScope || candidate === document.body || candidate === document.documentElement) break;
+        if (!mainScope.contains?.(candidate)) break;
+        candidates.add(candidate);
+      }
+    }
+
+    let best = null;
+    for (const root of candidates) {
+      const matches = new Map();
+      for (const entry of entries) {
+        if (root.contains?.(entry.row) && !matches.has(entry.memberId)) matches.set(entry.memberId, entry);
+      }
+      if (matches.size < minimumMatches) continue;
+      const profileLinks = Array.from(root.querySelectorAll?.("a[href*='profiles.php']") || []);
+      const profileIds = new Set(profileLinks
+        .map((anchor) => core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || ""))
+        .filter((memberId) => memberId > 0));
+      const density = profileIds.size ? matches.size / profileIds.size : 0;
+      if (
+        profileIds.size < matches.size
+        || profileIds.size > matches.size + 8
+        || profileLinks.length > (matches.size * 3) + 12
+        || density < 0.6
+      ) continue;
+      const score = { root, matches: matches.size, density, profileCount: profileIds.size };
+      if (
+        !best
+        || score.matches > best.matches
+        || (score.matches === best.matches && score.density > best.density)
+        || (
+          score.matches === best.matches
+          && score.density === best.density
+          && (
+            score.profileCount < best.profileCount
+            || (score.profileCount === best.profileCount && best.root.contains?.(score.root))
+          )
+        )
+      ) best = score;
+    }
+    return best?.root || null;
   }
 
   function markRankedWarBoard(board) {
@@ -1053,44 +1307,11 @@
     return host;
   }
 
-  function resolvePanelMount(view) {
+  function resolvePanelMount() {
     if (state.displayMode === "floating") {
       removeIntegratedMount(true);
       return { mount: document.body, placement: "floating", fallback: false };
     }
-
-    const desiredPlacement = isRosterModePage(view) ? "rank" : "";
-    if (!desiredPlacement) {
-      document.getElementById(PANEL_ID)?.remove();
-      removeIntegratedMount(false);
-      return { mount: null, placement: "none", fallback: false };
-    }
-    let host = document.getElementById(INTEGRATED_HOST_ID);
-    if (host && host.dataset?.placement !== desiredPlacement) {
-      removeIntegratedMount(true);
-      host = null;
-    }
-
-    if (desiredPlacement === "rank") {
-      const board = rankedWarBoardForView(view);
-      if (!host && board?.parentElement && board.isConnected !== false) {
-        host = createRankedWarHost(view, board);
-      }
-      if (host) {
-        const wrapper = document.getElementById(INTEGRATED_WRAPPER_ID);
-        if (board?.parentElement && board.isConnected !== false) {
-          markRankedWarBoard(board);
-          if (wrapper) wrapper.dataset.warbuddyBoardVerified = "1";
-          const mountPoint = rankedWarMountPoint(board, wrapper);
-          if (mountPoint?.parent && wrapper
-            && (wrapper.parentNode !== mountPoint.parent || wrapper.nextSibling !== mountPoint.before)) {
-            mountPoint.parent.insertBefore(wrapper, mountPoint.before);
-          }
-        }
-        return { mount: host, placement: "inline", fallback: false };
-      }
-    }
-
     document.getElementById(PANEL_ID)?.remove();
     removeIntegratedMount(false);
     return { mount: null, placement: "none", fallback: false };
@@ -1100,7 +1321,12 @@
     const nextMode = core.normalizeDisplayMode(value);
     state.displayMode = nextMode;
     storage.set(DISPLAY_MODE_STORAGE, nextMode);
-    removeIntegratedMount(true);
+    if (nextMode === "floating") {
+      removeIntegratedMount(true);
+    } else {
+      document.getElementById(PANEL_ID)?.remove();
+      removeIntegratedMount(false);
+    }
     scheduleRender();
     syncForegroundState();
   }
@@ -1145,7 +1371,13 @@
       data: JSON.stringify({ tornApiKey: key, scriptVersion: SCRIPT_VERSION }),
       label: "Warbuddy login",
     });
+    const responseReceivedAt = Date.now();
     if (!response?.session?.wsSessionToken) throw new Error("Backend did not return a companion session");
+    syncTrustedClock(
+      response?.serverTime || response?.session?.serverTime,
+      "session",
+      responseReceivedAt
+    );
     return response.session;
   }
 
@@ -1392,8 +1624,11 @@
     return true;
   }
 
-  function applyEvent(topic, payload, dibsSource) {
-    syncTrustedClock(payload?.serverTime || payload?.generatedAt, `event:${topic}`);
+  function applyEvent(topic, payload, dibsSource, serverTime) {
+    const eventServerTime = serverTime
+      || payload?.serverTime
+      || (topic === "war_dibs" ? payload?.generatedAt : undefined);
+    syncTrustedClock(eventServerTime, `event:${topic}`);
     state.lastLiveDataAt = Date.now();
     if (topic === "war_tracker_settings") {
       state.settings = payload || null;
@@ -1437,7 +1672,7 @@
   }
 
   function applyFallbackSnapshot(snapshot) {
-    syncTrustedClock(snapshot?.generatedAt, "snapshot");
+    syncTrustedClock(snapshot?.serverTime || snapshot?.generatedAt, "snapshot");
     state.lastLiveDataAt = Date.now();
     state.settings = snapshot?.settings || null;
     syncTargetDraft();
@@ -1479,7 +1714,7 @@
 
   function markFallbackSnapshotUnchanged(snapshot) {
     if (!snapshot?.unchanged || !state.fallbackRevision || snapshot.revision !== state.fallbackRevision) return false;
-    syncTrustedClock(snapshot?.generatedAt, "snapshot");
+    syncTrustedClock(snapshot?.serverTime || snapshot?.generatedAt, "snapshot");
     state.lastLiveDataAt = Date.now();
     for (const factionId of state.rosters.keys()) state.rosterDataAt.set(factionId, state.lastLiveDataAt);
     state.fallbackUnchangedCount += 1;
@@ -1497,6 +1732,7 @@
       lastFallbackError: state.lastFallbackError,
       lastLiveDataAt: state.lastLiveDataAt,
       generatedAt: new Date().toISOString(),
+      serverTime: state.clockReady ? trustedNowMs() : null,
     };
   }
 
@@ -1534,7 +1770,7 @@
     state.lastLiveDataAt = Math.max(state.lastLiveDataAt, Number(payload.lastLiveDataAt || 0));
     state.lastFallbackAt = String(payload.lastFallbackAt || state.lastFallbackAt || "");
     state.lastFallbackError = String(payload.lastFallbackError || "");
-    syncTrustedClock(payload.generatedAt, "shared-tab");
+    syncTrustedClock(payload.serverTime, "shared-tab");
     scheduleRender();
   }
 
@@ -1568,7 +1804,7 @@
       return;
     }
     if (type === "event" && TOPICS.includes(String(payload?.topic || ""))) {
-      applyEvent(String(payload.topic), payload.payload, "shared-live-event");
+      applyEvent(String(payload.topic), payload.payload, "shared-live-event", payload.serverTime);
       return;
     }
     if (type === "snapshot") {
@@ -1641,8 +1877,7 @@
     state.fallbackInFlight = true;
     clearFallbackTimer();
     try {
-      const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
-      if (!state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000) {
+      if (sessionTokenNeedsRefresh()) {
         await authenticate();
       }
       const factionId = String(state.session?.factionId || "");
@@ -1696,11 +1931,12 @@
     let message;
     try { message = JSON.parse(String(event.data || "")); }
     catch { return; }
-    syncTrustedClock(message?.serverTime || message?.generatedAt, "websocket");
+    const envelopeServerTime = message?.serverTime || message?.generatedAt;
+    syncTrustedClock(envelopeServerTime, "websocket");
     if (message?.type === "event" && TOPICS.includes(String(message.topic || ""))) {
-      applyEvent(String(message.topic), message.payload, "websocket");
+      applyEvent(String(message.topic), message.payload, "websocket", envelopeServerTime);
       if (sharedBrokerEnabled() && tabBroker.isLeader()) {
-        tabBroker.broadcast("event", { topic: String(message.topic), payload: message.payload });
+        tabBroker.broadcast("event", { topic: String(message.topic), payload: message.payload, serverTime: envelopeServerTime });
       }
     }
     if (message?.type === "response" && message.id && state.socketRequests.has(String(message.id))) {
@@ -1745,8 +1981,7 @@
     if (!canAuthenticate) return;
     if (state.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.socket.readyState)) return;
     try {
-      const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
-      if (!state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000) await authenticate();
+      if (sessionTokenNeedsRefresh()) await authenticate();
       if (!getStoredKey() || !state.session || !state.token) return;
       syncTabBrokerIdentity();
       if (sharedBrokerEnabled() && !tabBroker.isLeader()) {
@@ -2151,6 +2386,9 @@
   }
 
   function dibsClaimContext(member, view, claim) {
+    if (!state.clockReady) {
+      return { eligible: false, state: "clock_syncing", reason: "Synchronizing server time." };
+    }
     const claimantPlayerId = claim?.claimedByPlayerId || state.session?.playerId;
     const claimant = (view?.ownRoster || []).find((candidate) => (
       Number(candidate?.member_id || 0) === Number(claimantPlayerId || 0)
@@ -2164,6 +2402,21 @@
     }, state.nowMs);
   }
 
+  function ensureInlineMemberTools(anchor, memberId) {
+    const parent = anchor?.parentElement;
+    if (!parent) return null;
+    let tools = Array.from(parent.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`) || [])
+      .find((candidate) => Number(candidate.dataset?.memberId || 0) === Number(memberId || 0));
+    if (tools) return tools;
+    tools = document.createElement("span");
+    tools.className = INLINE_TOOLS_CLASS;
+    tools.dataset.memberId = String(memberId);
+    tools.addEventListener("click", handleInlineToolAction);
+    if (typeof anchor.insertAdjacentElement === "function") anchor.insertAdjacentElement("afterend", tools);
+    else parent.insertBefore(tools, anchor.nextSibling || null);
+    return tools;
+  }
+
   function syncIntegratedMemberTools(view = sessionView()) {
     const canFindBoard = state.active
       && isRosterModePage(view)
@@ -2173,8 +2426,15 @@
       if (state.integratedDecorationsActive) removeInlineMemberTools();
       return;
     }
-    const board = rankedWarBoardForView(view);
-    if (!board || board.isConnected === false) return;
+    const signedBoard = rankedWarBoardForView(view);
+    const board = signedBoard?.isConnected === false ? null : signedBoard;
+    const verifiedBoard = board || rankedWarUnsignedRosterCluster(view.enemyRoster);
+    markRankedWarBoard(verifiedBoard);
+    const enemyEntries = rankedWarEnemyRowEntries(view.enemyRoster, verifiedBoard);
+    if (!enemyEntries.length) {
+      if (state.integratedDecorationsActive) removeInlineMemberTools();
+      return;
+    }
     state.integratedDecorationsActive = true;
 
     const members = new Map(view.enemyRoster.map((member) => [Number(member?.member_id || 0), member]));
@@ -2186,28 +2446,18 @@
     const keep = new Set();
     const keepRows = new Set();
     const keepAttackLinks = new Set();
+    const keepActionCells = new Set();
     const keepRosterActions = new Set();
     const keepStatusCells = new Set();
     const decoratedRows = [];
-    const enemyAnchors = rosterProfileAnchors(view.enemyRoster, board);
-
-    for (const anchor of enemyAnchors) {
-      const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
+    for (const { anchor, memberId, row } of enemyEntries) {
       const member = members.get(memberId);
       if (!member) continue;
       keep.add(memberId);
       const parent = anchor.parentElement;
       if (!parent) continue;
-      let tools = Array.from(parent.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`) || [])
-        .find((candidate) => Number(candidate.dataset?.memberId || 0) === memberId);
-      if (!tools) {
-        tools = document.createElement("span");
-        tools.className = INLINE_TOOLS_CLASS;
-        tools.dataset.memberId = String(memberId);
-        tools.addEventListener("click", handleInlineToolAction);
-        if (typeof anchor.insertAdjacentElement === "function") anchor.insertAdjacentElement("afterend", tools);
-        else parent.insertBefore(tools, anchor.nextSibling || null);
-      }
+      const tools = ensureInlineMemberTools(anchor, memberId);
+      if (!tools) continue;
 
       const watched = watchedIds.has(memberId);
       const watchBusy = state.targetQuickBusyId === memberId;
@@ -2231,7 +2481,6 @@
       const retaliationRemaining = retaliation
         ? core.duration((Number(retaliation.expiresAt || 0) * 1000) - state.nowMs)
         : "";
-      const row = rankedWarRowForAnchor(anchor);
       const actionable = actionableIds.has(memberId) || !!retaliation;
       const availability = core.memberAvailability(member, state.nowMs);
       const flags = {
@@ -2272,6 +2521,10 @@
         if (attackLink.title !== attackTitle) attackLink.title = attackTitle;
 
         const actionParent = attackLink.parentElement;
+        if (actionParent) {
+          actionParent.classList.add("warbuddy-roster-action-cell");
+          keepActionCells.add(actionParent);
+        }
         let rosterActions = Array.from(actionParent?.querySelectorAll?.(`.${ROSTER_ACTIONS_CLASS}`) || [])
           .find((candidate) => Number(candidate.dataset?.memberId || 0) === memberId);
         if (!rosterActions && actionParent) {
@@ -2283,24 +2536,24 @@
         }
         if (rosterActions) {
           keepRosterActions.add(rosterActions);
-          const rosterDibsState = claim
-            ? `<span class="wc-native-state wc-native-dibs ${isMine ? "mine" : "taken"}" title="${escapeHtml(dibsLabel)}">${escapeHtml(isMine ? `Your Dibs ${dibsRemaining}` : `Dibsed ${dibsRemaining}`)}</span>`
+          const rosterDibsControl = state.rosterDibsButtons
+            ? dibsMarkup(member, view, claim, `roster-${memberId}`)
             : "";
-          const rosterRetalState = retaliation
-            ? `<span class="wc-native-state wc-native-retal" title="${escapeHtml(retaliationTitle)}">Hosp = Retal ${escapeHtml(retaliationRemaining)}</span>`
-            : "";
-          const rosterMarkup = `${rosterRetalState}${rosterDibsState}${dibsMarkup(member, view, claim, `roster-${memberId}`)}`;
+          const rosterMarkup = rosterDibsControl;
           if (inlineMarkupCache.get(rosterActions) !== rosterMarkup) {
             rosterActions.innerHTML = rosterMarkup;
             inlineMarkupCache.set(rosterActions, rosterMarkup);
           }
         }
+        attackLink.classList.toggle("warbuddy-attack-has-dibs", state.rosterDibsButtons);
       }
-      tools.classList.toggle("quiet", !watched && !retaliation && !claim);
+      tools.classList.toggle("quiet", !state.rosterDibsButtons && !watched && !retaliation && !claim);
       const fallbackDibsState = !attackLink && claim
         ? `<span class="wc-native-state wc-native-dibs ${isMine ? "mine" : "taken"}" title="${escapeHtml(dibsLabel)}">${escapeHtml(isMine ? `Your Dibs ${dibsRemaining}` : `Dibsed ${dibsRemaining}`)}</span>`
         : "";
-      const fallbackDibsControl = !attackLink ? dibsMarkup(member, view, claim, `roster-fallback-${memberId}`) : "";
+      const fallbackDibsControl = !attackLink && state.rosterDibsButtons
+        ? dibsMarkup(member, view, claim, `roster-fallback-${memberId}`)
+        : "";
       const toolsMarkup = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${!attackLink && retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationTitle)}" title="${escapeHtml(retaliationTitle)}">Hosp = Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}${fallbackDibsState}${fallbackDibsControl}`;
       if (inlineMarkupCache.get(tools) !== toolsMarkup) {
         tools.innerHTML = toolsMarkup;
@@ -2309,7 +2562,7 @@
     }
 
     let activeSortParent = null;
-    const tornSort = tornRosterSortState(decoratedRows, board);
+    const tornSort = tornRosterSortState(decoratedRows, verifiedBoard);
     const ffscouterOwnsOrder = state.rosterPrioritySort && ffscouterFilterActive();
     const tornOwnsOrder = state.rosterPrioritySort && !core.rosterPriorityAllowedForSort(tornSort.column);
     const externalSortReason = ffscouterOwnsOrder
@@ -2350,6 +2603,9 @@
     document.querySelectorAll?.(`.${ROSTER_ACTIONS_CLASS}`).forEach((actions) => {
       if (!keepRosterActions.has(actions)) actions.remove();
     });
+    document.querySelectorAll?.(".warbuddy-roster-action-cell").forEach((actionCell) => {
+      if (!keepActionCells.has(actionCell)) actionCell.classList.remove("warbuddy-roster-action-cell");
+    });
     document.querySelectorAll?.(`.${STATUS_CELL_CLASS}, .${STATUS_MISMATCH_CLASS}`).forEach((cell) => {
       if (keepStatusCells.has(cell)) return;
       clearIntegratedStatusCell(cell);
@@ -2371,7 +2627,7 @@
     });
     document.querySelectorAll?.("[data-warbuddy-attack-state]").forEach((link) => {
       if (keepAttackLinks.has(link)) return;
-      link.classList.remove("warbuddy-attack-dibs-mine", "warbuddy-attack-dibs-taken", "warbuddy-attack-retal");
+      link.classList.remove("warbuddy-attack-dibs-mine", "warbuddy-attack-dibs-taken", "warbuddy-attack-retal", "warbuddy-attack-has-dibs");
       link.title = String(link.title || "").replace(/\s*-?\s*Warbuddy:.*$/i, "").trim();
       delete link.dataset.warbuddyAttackState;
     });
@@ -2505,8 +2761,7 @@
 
   async function persistWatchedTargetIds(value) {
     const memberIds = normalizeTargetIds(value);
-    const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
-    if (!state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000) await authenticate();
+    if (sessionTokenNeedsRefresh()) await authenticate();
     const factionId = String(state.session?.factionId || "");
     if (!factionId || !state.token) throw new Error("Companion session is unavailable");
     const response = await requestJson({
@@ -2634,6 +2889,7 @@
       return false;
     }
     if (action === "claim") {
+      state.nowMs = trustedNowMs();
       const view = sessionView();
       const target = view.enemyRoster.find((member) => Number(member?.member_id || 0) === memberId);
       const eligibility = dibsClaimContext(target, view);
@@ -2654,8 +2910,7 @@
     if (resumeFallback) stopFallbackPolling();
     scheduleRender();
     try {
-      const expiresAt = Date.parse(String(state.session?.wsSessionTokenExpiresAt || state.session?.expiresAt || ""));
-      if (!state.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now() + 30_000) await authenticate();
+      if (sessionTokenNeedsRefresh()) await authenticate();
       const factionId = String(state.session?.factionId || "");
       if (!factionId || !state.token) throw new Error("Companion session is unavailable");
       const response = await requestJson({
@@ -2668,6 +2923,7 @@
         data: JSON.stringify({ action, targetMemberId: memberId }),
         label: "Dibs",
       });
+      syncTrustedClock(response?.serverTime, "dibs-response");
       applyDibsSnapshot(response, {
         source: "mutation-response",
         baselineSequence: dibsMutationBaselineSequence,
@@ -2738,7 +2994,7 @@
     scheduleRender();
 
     if (!outcome.releaseDibs) return;
-    const claim = core.activeDibsClaim(state.dibs, targetMemberId, Date.now());
+    const claim = core.activeDibsClaim(state.dibs, targetMemberId, trustedNowMs());
     if (!claim || String(claim.claimedByPlayerId || "") !== String(state.session?.playerId || "")) return;
     const releaseKey = `${targetMemberId}:${String(claim.claimedAt || "")}`;
     if (state.attackOutcomeReleaseKey === releaseKey) return;
@@ -2837,7 +3093,7 @@
       && state.session?.access === "war_companion"
       && state.session?.enabledModules?.war_planner !== false
       && registeredFactionId === ownFactionId
-      && state.settings?.enabled === true
+      && state.settings?.enabled !== false
       && !!view?.alliedScore?.start
       && !!enemyFactionId
       && enemyFactionId !== ownFactionId;
@@ -2847,13 +3103,7 @@
     const memberId = targetPageMemberId();
     if (!memberId || !targetPageFactionEligible(view)) return false;
     if (state.attackTargetId) return true;
-    if (!state.profileTargetId) return false;
-    if (savedTargetIds().includes(memberId)) return true;
-    if ((view?.enemyRoster || []).some((member) => Number(member?.member_id || 0) === memberId)) return true;
-    if ((view?.retaliation || []).some((attack) => Number(attack?.attackerId || 0) === memberId)) return true;
-    if (memberLoadout(view, memberId)) return true;
-    return core.dibsFeatureEnabled(state.settings)
-      && !!core.activeDibsClaim(view?.dibs, memberId, state.nowMs);
+    return !!state.profileTargetId;
   }
 
   function attackTargetLabelsContainer() {
@@ -2872,22 +3122,175 @@
     return locallyMatched.length === 1 ? locallyMatched[0] : null;
   }
 
-  function profileTargetContainer() {
-    const targetId = Number(state.profileTargetId || 0);
-    if (!targetId) return null;
-    const existing = document.getElementById?.(TARGET_CONTEXT_ID);
-    if (
-      existing?.classList?.contains?.("wc-profile-context")
-      && Number(existing.dataset?.memberId || 0) === targetId
-      && existing.parentElement
-      && existing.parentElement.isConnected !== false
-      && existing.parentElement.matches?.(".profile-container")
-    ) return existing.parentElement;
-    const candidates = Array.from(document.querySelectorAll?.(".profile-container") || [])
+  function nativeAnchorRect(node) {
+    const rect = node?.getBoundingClientRect?.();
+    if (!rect) return null;
+    const left = Number(rect.left);
+    const right = Number(rect.right);
+    const top = Number(rect.top);
+    const bottom = Number(rect.bottom);
+    const width = Number(rect.width ?? (right - left));
+    const height = Number(rect.height ?? (bottom - top));
+    if (![left, right, top, bottom, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+    return { left, right, top, bottom, width, height };
+  }
+
+  function profileNameAnchor() {
+    const memberId = Number(state.profileTargetId || 0);
+    if (!memberId) return null;
+    const idToken = `[${memberId}]`;
+    const candidates = Array.from(document.querySelectorAll?.("h1, h2, h3, h4, [role='heading']") || [])
       .filter((candidate) => candidate?.isConnected !== false)
-      .filter((candidate) => Array.from(candidate.querySelectorAll?.("a[href*='sid=attack']") || [])
-        .some((control) => core.attackPageTargetId(control.getAttribute?.("href") || control.href || "") === targetId));
-    return candidates.length === 1 ? candidates[0] : null;
+      .filter((candidate) => !candidate.closest?.(`#${TARGET_CONTEXT_ID}, #${ROSTER_CONTEXT_ID}`))
+      .map((candidate) => ({
+        candidate,
+        text: String(candidate.textContent || "").replace(/\s+/g, " ").trim(),
+        rect: nativeAnchorRect(candidate),
+      }))
+      .filter(({ text, rect }) => !!rect && text.includes(idToken));
+    candidates.sort((left, right) => (
+      Number(!/^H[1-4]$/i.test(String(left.candidate?.tagName || "")))
+      - Number(!/^H[1-4]$/i.test(String(right.candidate?.tagName || "")))
+      || left.text.length - right.text.length
+      || left.rect.top - right.rect.top
+    ));
+    if (candidates.length) return candidates[0].candidate;
+    const main = document.querySelector?.("#mainContainer, main, [role='main']") || null;
+    const fallback = main?.querySelector?.("h1, h2, h3, h4, [role='heading']") || null;
+    return nativeAnchorRect(fallback) ? fallback : null;
+  }
+
+  function rankedWarFilterAnchor() {
+    const scope = rankedWarMainContent() || document;
+    const candidates = Array.from(scope?.querySelectorAll?.(
+      "h1, h2, h3, h4, [role='heading'], [class*='title'], [class*='header']"
+    ) || [])
+      .filter((candidate) => candidate?.isConnected !== false)
+      .filter((candidate) => !candidate.closest?.(`#${PANEL_ID}, #${TARGET_CONTEXT_ID}, #${ROSTER_CONTEXT_ID}`))
+      .map((candidate) => ({
+        candidate,
+        text: String(candidate.textContent || "").replace(/\s+/g, " ").trim(),
+        rect: nativeAnchorRect(candidate),
+      }))
+      .filter(({ text, rect }) => !!rect && /^ranked\s+war\s+filter(?:\s*&\s*sort\s+controls)?$/i.test(text));
+    candidates.sort((left, right) => (
+      (left.rect.width * left.rect.height) - (right.rect.width * right.rect.height)
+      || left.rect.top - right.rect.top
+    ));
+    return candidates[0]?.candidate || null;
+  }
+
+  function rankedWarFilterBar(anchor = rankedWarFilterAnchor()) {
+    const main = rankedWarMainContent();
+    if (!anchor || !main?.contains?.(anchor)) return null;
+    let bar = anchor;
+    for (let candidate = anchor, depth = 0; candidate && candidate !== main && depth < 6; depth += 1, candidate = candidate.parentElement) {
+      const text = String(candidate.textContent || "").replace(/\s+/g, " ").trim();
+      const rect = nativeAnchorRect(candidate);
+      if (!rect || !/^ranked\s+war\s+filter(?:\s*&\s*sort\s+controls)?$/i.test(text) || rect.height > 64) break;
+      bar = candidate;
+    }
+    return bar;
+  }
+
+  function rankedWarRosterContextMountPoint() {
+    const bar = rankedWarFilterBar();
+    if (!bar?.parentElement || bar.isConnected === false) return null;
+    let child = bar;
+    let parent = bar.parentElement;
+    for (let depth = 0; parent && depth < 5; depth += 1) {
+      if (parent === document.body || parent === document.documentElement) break;
+      const display = typeof getComputedStyle === "function"
+        ? String(getComputedStyle(parent)?.display || "").toLowerCase()
+        : "block";
+      if (!display || SAFE_INTEGRATED_PARENT_DISPLAYS.has(display)) {
+        let before = child.nextSibling || null;
+        if (before?.id === ROSTER_CONTEXT_ID) before = before.nextSibling || null;
+        return { parent, before, anchor: bar };
+      }
+      child = parent;
+      parent = parent.parentElement;
+    }
+    return null;
+  }
+
+  function positionNativeOverlay(context, anchor, placement) {
+    if (!context) return false;
+    const anchorRect = nativeAnchorRect(anchor);
+    context.classList?.toggle?.("wc-native-overlay-fallback", !anchorRect);
+    if (!anchorRect) {
+      context.style?.removeProperty?.("left");
+      context.style?.removeProperty?.("top");
+      context.style?.removeProperty?.("right");
+      if (context.style) context.style.visibility = "visible";
+      return false;
+    }
+    if (context.style) context.style.visibility = "hidden";
+    const contextRect = context.getBoundingClientRect?.();
+    const width = Math.max(18, Number(context.offsetWidth || contextRect?.width || 0));
+    const height = Math.max(18, Number(context.offsetHeight || contextRect?.height || 0));
+    const viewport = window.visualViewport;
+    const viewportLeft = Number(viewport?.offsetLeft || 0);
+    const viewportTop = Number(viewport?.offsetTop || 0);
+    const viewportWidth = Number(viewport?.width || window.innerWidth || document.documentElement?.clientWidth || 320);
+    const viewportHeight = Number(viewport?.height || window.innerHeight || document.documentElement?.clientHeight || 480);
+    const viewportRight = viewportLeft + viewportWidth;
+    const viewportBottom = viewportTop + viewportHeight;
+    if (
+      anchorRect.bottom < viewportTop
+      || anchorRect.top > viewportBottom
+      || anchorRect.right < viewportLeft
+      || anchorRect.left > viewportRight
+    ) {
+      if (context.style) context.style.visibility = "hidden";
+      return true;
+    }
+    let left;
+    let top;
+    if (placement === "profile") {
+      left = anchorRect.right + 8;
+      top = anchorRect.top + ((anchorRect.height - height) / 2);
+    } else if (placement === "roster-main") {
+      left = anchorRect.right - width - 8;
+      top = anchorRect.top + 8;
+    } else if (placement === "roster") {
+      const rosterMainRect = nativeAnchorRect(rankedWarMainContent());
+      left = (rosterMainRect?.right || anchorRect.right) - width - 6;
+      top = anchorRect.top + ((anchorRect.height - height) / 2);
+    } else {
+      left = anchorRect.right - width - 6;
+      top = anchorRect.top + ((anchorRect.height - height) / 2);
+    }
+    left = Math.max(viewportLeft + 8, Math.min(left, viewportRight - width - 8));
+    top = Math.max(viewportTop + 4, Math.min(top, viewportBottom - height - 4));
+    context.style?.removeProperty?.("right");
+    context.style?.removeProperty?.("bottom");
+    if (context.style) {
+      const setCoordinate = (property, value) => {
+        if (typeof context.style.setProperty === "function") context.style.setProperty(property, value, "important");
+        else context.style[property] = value;
+      };
+      setCoordinate("left", `${Math.round(left)}px`);
+      setCoordinate("top", `${Math.round(top)}px`);
+      context.style.visibility = "visible";
+    }
+    return true;
+  }
+
+  function repositionNativeOverlays() {
+    const targetContext = document.getElementById(TARGET_CONTEXT_ID);
+    if (targetContext && state.profileTargetId) {
+      positionNativeOverlay(targetContext, profileNameAnchor(), "profile");
+      positionOpenDibsTip(targetContext);
+    }
+  }
+
+  function scheduleNativeOverlayPosition() {
+    if (state.overlayFrame || document.visibilityState === "hidden") return;
+    state.overlayFrame = requestAnimationFrame(() => {
+      state.overlayFrame = 0;
+      repositionNativeOverlays();
+    });
   }
 
   function targetContextMountPoint() {
@@ -2897,9 +3300,15 @@
       return { parent: attackMount, before: null, placement: "attack" };
     }
     if (!state.profileTargetId) return null;
-    const profileMount = profileTargetContainer();
-    if (!profileMount) return null;
-    return { parent: profileMount, before: null, placement: "profile" };
+    if (!document.body) return null;
+    return {
+      parent: document.body,
+      before: null,
+      placement: "profile",
+      tagName: "div",
+      anchor: profileNameAnchor(),
+      overlay: true,
+    };
   }
 
   function targetContextMarkup(view) {
@@ -2995,6 +3404,31 @@
       setDisplayMode(control.dataset?.displayMode);
       return;
     }
+    if (action === "set-roster-filter") {
+      event.preventDefault();
+      state.rosterFilter = core.normalizeRosterFilter(control.dataset?.rosterFilter);
+      storage.set(ROSTER_FILTER_STORAGE, state.rosterFilter);
+      syncIntegratedMemberTools(sessionView());
+      scheduleRender();
+      return;
+    }
+    if (action === "toggle-roster-dibs") {
+      event.preventDefault();
+      state.rosterDibsButtons = !state.rosterDibsButtons;
+      storage.set(ROSTER_DIBS_STORAGE, state.rosterDibsButtons ? "1" : "0");
+      closeDibsDetails();
+      syncIntegratedMemberTools(sessionView());
+      scheduleRender();
+      return;
+    }
+    if (action === "toggle-roster-priority") {
+      event.preventDefault();
+      state.rosterPrioritySort = !state.rosterPrioritySort;
+      storage.set(ROSTER_SORT_STORAGE, state.rosterPrioritySort ? "1" : "0");
+      syncIntegratedMemberTools(sessionView());
+      scheduleRender();
+      return;
+    }
     if (action === "connect") {
       event.preventDefault();
       void connectFromInput();
@@ -3021,7 +3455,7 @@
       return false;
     }
     let context = document.getElementById(TARGET_CONTEXT_ID);
-    const expectedTagName = mountPoint.placement === "attack" ? "SPAN" : "DIV";
+    const expectedTagName = String(mountPoint.tagName || (mountPoint.placement === "attack" ? "span" : "div")).toUpperCase();
     if (context && String(context.tagName || "").toUpperCase() !== expectedTagName) {
       context.remove();
       context = null;
@@ -3044,16 +3478,6 @@
     }
     context.className = `warbuddy-target-context wc-compact-context wc-${mountPoint.placement}-context`;
     context.dataset.memberId = String(memberId);
-    const profileHost = mountPoint.placement === "profile" ? mountPoint.parent : null;
-    document.querySelectorAll?.(`.${PROFILE_HOST_CLASS}`).forEach((host) => {
-      if (host !== profileHost) host.classList.remove(PROFILE_HOST_CLASS);
-    });
-    if (profileHost && !profileHost.classList?.contains?.(PROFILE_HOST_CLASS)) {
-      const hostPosition = typeof getComputedStyle === "function"
-        ? String(getComputedStyle(profileHost)?.position || "").toLowerCase()
-        : "static";
-      if (!hostPosition || hostPosition === "static") profileHost.classList?.add?.(PROFILE_HOST_CLASS);
-    }
     if (context.parentNode !== mountPoint.parent) {
       mountPoint.parent.insertBefore(context, mountPoint.before || null);
     }
@@ -3064,7 +3488,67 @@
       targetMarkupCache.set(context, markup);
       restorePanelFocus(context, focusSnapshot);
     }
+    if (mountPoint.overlay) positionNativeOverlay(context, mountPoint.anchor, mountPoint.placement);
     positionOpenDibsTip(context);
+    return true;
+  }
+
+  function nativeRosterContextMarkup(view = sessionView()) {
+    const status = statusView();
+    const label = /^Live\b/i.test(status.label) ? "Live" : status.label;
+    const ownFactionLabel = view.ownFactionName || (view.ownFactionId ? `Faction ${view.ownFactionId}` : "");
+    const enemyFactionLabel = view.enemyFactionName || (view.enemyFactionId ? `Faction ${view.enemyFactionId}` : "");
+    const matchupLabel = enemyFactionLabel ? `${ownFactionLabel} vs ${enemyFactionLabel}` : ownFactionLabel;
+    const watchedCount = savedTargetIds().length;
+    const actionableCount = new Set((view.actions || [])
+      .map((action) => Number(action?.memberId || 0))
+      .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0)).size;
+    const retaliationCount = Array.isArray(view.retaliation) ? view.retaliation.length : 0;
+    return `<summary><span class="wc-native-roster-chevron" aria-hidden="true">&#9654;</span><span class="wc-native-brand" title="Warbuddy · ${escapeHtml(status.label)}">Warbuddy</span><span class="wc-native-beta">Beta</span>${matchupLabel ? `<span class="wc-native-roster-matchup" title="${escapeHtml(matchupLabel)}">${escapeHtml(matchupLabel)}</span>` : ""}<span class="wc-native-roster-status"><span class="wc-dot ${status.tone}"></span><span class="wc-native-roster-status-label">${escapeHtml(label)}</span></span><span class="wc-native-roster-counts"><span>Watched ${watchedCount}</span><span>Queue ${actionableCount}</span><span>Retals ${retaliationCount}</span></span></summary><div id="${INTEGRATED_HOST_ID}" class="wc-native-roster-panel-host"></div>`;
+  }
+
+  function syncNativeRosterContext(view = sessionView()) {
+    if (
+      !state.active
+      || state.displayMode === "floating"
+      || !isRosterModePage(view)
+      || !targetPageFactionEligible(view)
+      || !document.body
+    ) {
+      removeNativeRosterContext();
+      return false;
+    }
+    const mountPoint = rankedWarRosterContextMountPoint();
+    if (!mountPoint?.parent) {
+      removeNativeRosterContext();
+      return false;
+    }
+    let context = document.getElementById(ROSTER_CONTEXT_ID);
+    if (context && String(context.tagName || "").toUpperCase() !== "DETAILS") {
+      context.remove();
+      context = null;
+    }
+    if (!context) {
+      context = document.createElement("details");
+      context.id = ROSTER_CONTEXT_ID;
+      context.addEventListener("toggle", (event) => {
+        state.rosterControlsOpen = event.currentTarget.open === true;
+        storage.set(ROSTER_CONTROLS_STORAGE, state.rosterControlsOpen ? "1" : "0");
+      });
+    }
+    context.className = "warbuddy-roster-context wc-native-roster-context";
+    if (context.parentNode !== mountPoint.parent || context.nextSibling !== mountPoint.before) {
+      mountPoint.parent.insertBefore(context, mountPoint.before);
+    }
+    const markup = nativeRosterContextMarkup(view);
+    if (targetMarkupCache.get(context) !== markup || !context.querySelector?.(".wc-native-brand")) {
+      const retainedPanel = context.querySelector?.(`#${PANEL_ID}`) || null;
+      context.innerHTML = markup;
+      const panelHost = context.querySelector?.(`#${INTEGRATED_HOST_ID}`);
+      if (retainedPanel && panelHost) panelHost.appendChild(retainedPanel);
+      targetMarkupCache.set(context, markup);
+    }
+    if (context.open !== state.rosterControlsOpen) context.open = state.rosterControlsOpen;
     return true;
   }
 
@@ -3120,9 +3604,11 @@
   function render() {
     state.renderQueued = false;
     if (!document.body) return;
+    state.nowMs = trustedNowMs();
     if (!state.active) {
       document.getElementById(PANEL_ID)?.remove();
       removeTargetContext();
+      removeNativeRosterContext();
       removeInlineMemberTools();
       removeIntegratedMount(false);
       return;
@@ -3134,6 +3620,7 @@
     if (targetPage && !targetPageFactionEligible(view)) {
       document.getElementById(PANEL_ID)?.remove();
       removeTargetContext();
+      removeNativeRosterContext();
       removeInlineMemberTools();
       removeIntegratedMount(false);
       stopAttackOutcomeDetection();
@@ -3141,20 +3628,27 @@
     }
     if (targetPage) syncTargetPageContext(view);
     else removeTargetContext();
-    if (state.displayMode !== "floating" && targetPage) {
-      document.getElementById(PANEL_ID)?.remove();
-      removeInlineMemberTools();
-      removeIntegratedMount(false);
-      return;
+    let mountState;
+    if (state.displayMode !== "floating") {
+      if (!rankedWarPage) {
+        document.getElementById(PANEL_ID)?.remove();
+        removeNativeRosterContext();
+        removeInlineMemberTools();
+        removeIntegratedMount(false);
+        return;
+      }
+      const rosterContextReady = syncNativeRosterContext(view);
+      syncIntegratedMemberTools(view);
+      const inlineMount = rosterContextReady
+        ? document.querySelector?.(`#${ROSTER_CONTEXT_ID} #${INTEGRATED_HOST_ID}`)
+        : null;
+      if (!inlineMount) return;
+      mountState = { mount: inlineMount, placement: "accordion", fallback: false };
+    } else {
+      removeNativeRosterContext();
+      if (!rankedWarPage) removeInlineMemberTools();
+      mountState = resolvePanelMount(view);
     }
-    if (state.displayMode !== "floating" && !rankedWarPage) {
-      document.getElementById(PANEL_ID)?.remove();
-      removeInlineMemberTools();
-      removeIntegratedMount(false);
-      return;
-    }
-    if (!rankedWarPage) removeInlineMemberTools();
-    const mountState = resolvePanelMount(view);
     const mount = mountState.mount;
     if (!mount) {
       syncIntegratedMemberTools(view);
@@ -3166,10 +3660,12 @@
       panel.id = PANEL_ID;
     }
     if (panel.parentNode !== mount) mount.appendChild(panel);
-    const rosterMode = mountState.placement === "inline" && isRosterModePage(view);
+    const inlineAccordion = mountState.placement === "accordion";
+    const rosterMode = (mountState.placement === "inline" || inlineAccordion) && isRosterModePage(view);
     const floatingMode = mountState.placement === "floating";
     panel.classList.toggle("wc-floating", floatingMode);
-    panel.classList.toggle("wc-integrated-inline", mountState.placement === "inline");
+    panel.classList.toggle("wc-integrated-inline", mountState.placement === "inline" || inlineAccordion);
+    panel.classList.toggle("wc-inline-accordion", inlineAccordion);
     panel.classList.toggle("wc-integrated-toolbar", mountState.placement === "toolbar");
     panel.classList.toggle("wc-integrated-fallback", mountState.fallback);
     panel.classList.toggle("wc-roster-mode", rosterMode);
@@ -3270,7 +3766,7 @@
       ["floating", "Floating"],
     ].map(([value, label]) => `<button type="button" class="wc-display-mode${state.displayMode === value ? " active" : ""}" data-display-mode="${value}" aria-pressed="${state.displayMode === value ? "true" : "false"}">${label}</button>`).join("");
     const optionsSection = savedKey
-      ? `<details data-section="options"${state.optionsOpen ? " open" : ""}><summary>Options</summary><div class="wc-display-setting"><div class="wc-display-label">Layout</div><div class="wc-display-modes" role="group" aria-label="Warbuddy layout">${displayModeOptions}</div></div><div class="wc-options">${notificationOptions}</div>${notificationSupported ? "" : `<div class="wc-privacy">Desktop notifications are not available in this userscript host.</div>`}</details>`
+      ? `<details data-section="options"${state.optionsOpen ? " open" : ""}><summary>Options</summary><div class="wc-display-setting"><div class="wc-display-label">Layout</div><div class="wc-display-modes" role="group" aria-label="Warbuddy layout">${displayModeOptions}</div></div><div class="wc-options"><label class="wc-option"><input type="checkbox" data-field="roster-dibs-buttons"${state.rosterDibsButtons ? " checked" : ""}>Dibs buttons on war roster rows</label>${notificationOptions}</div>${notificationSupported ? "" : `<div class="wc-privacy">Desktop notifications are not available in this userscript host.</div>`}</details>`
       : "";
 
     const showKeyEditor = !savedKey || state.keyEditorOpen || state.authTerminal;
@@ -3294,7 +3790,7 @@
       <button type="button" class="wc-button wc-icon" data-display-mode="native" aria-label="Use native layout" title="Close floating panel and use the native layout">&times;</button>
     </div>`;
     const rosterHeader = `<div class="wc-roster-summary"><button type="button" class="wc-roster-summary-button" data-action="toggle-roster-controls" aria-expanded="${state.rosterControlsOpen ? "true" : "false"}"><span class="wc-roster-chevron">${state.rosterControlsOpen ? "&#9660;" : "&#9654;"}</span><span class="wc-roster-name">Warbuddy</span><span class="wc-roster-beta">Beta</span>${matchupLabel ? `<span class="wc-roster-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}</button><span class="wc-roster-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span><span class="wc-roster-counts">${rosterChainMarkup ? `<span class="wc-roster-chains">${rosterChainMarkup}</span>` : ""}<span class="wc-roster-watched">Watched ${savedTargetIds().length}</span><span>Queue ${actionableMemberIds.size}</span><span>Retals ${view.retaliation.length}</span></span></div>`;
-    const panelMarkup = `${rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
+    const panelMarkup = `${inlineAccordion ? "" : rosterMode ? rosterHeader : standardHeader}<div class="wc-body">${panelBody}</div>`;
     if (panelMarkupCache.get(panel) === panelMarkup && panel.querySelector(".wc-body")) {
       syncIntegratedMemberTools(view);
       positionOpenDibsTip(document);
@@ -3349,6 +3845,13 @@
     panel.querySelector('[data-field="roster-priority-sort"]')?.addEventListener("change", (event) => {
       state.rosterPrioritySort = event.currentTarget.checked === true;
       storage.set(ROSTER_SORT_STORAGE, state.rosterPrioritySort ? "1" : "0");
+      syncIntegratedMemberTools(view);
+      scheduleRender();
+    });
+    panel.querySelector('[data-field="roster-dibs-buttons"]')?.addEventListener("change", (event) => {
+      state.rosterDibsButtons = event.currentTarget.checked === true;
+      storage.set(ROSTER_DIBS_STORAGE, state.rosterDibsButtons ? "1" : "0");
+      closeDibsDetails();
       syncIntegratedMemberTools(view);
       scheduleRender();
     });
@@ -3589,21 +4092,36 @@
         || floatingPanelMissing;
     }
     if (!isRosterModePage(view)) return floatingPanelMissing;
-    const board = rankedWarBoardForView(view);
-    if (!board?.parentElement || board.isConnected === false) return floatingPanelMissing;
-    if (!document.getElementById(PANEL_ID)) return true;
-    const anchors = rosterProfileAnchors(view.enemyRoster, board);
-    return anchors.some((anchor) => {
-      const memberId = core.profileMemberIdFromUrl(anchor.getAttribute?.("href") || anchor.href || "");
+    if (state.displayMode === "floating") return floatingPanelMissing;
+    const rosterContext = document.getElementById(ROSTER_CONTEXT_ID);
+    if (!targetPageFactionEligible(view)) return !!rosterContext;
+    const rosterMountPoint = rankedWarRosterContextMountPoint();
+    if (
+      !rosterContext
+      || String(rosterContext.tagName || "").toUpperCase() !== "DETAILS"
+      || !rosterMountPoint?.parent
+      || rosterContext.parentNode !== rosterMountPoint.parent
+      || !rosterContext.querySelector?.(".wc-native-brand")
+      || !rosterContext.querySelector?.(`#${INTEGRATED_HOST_ID} > #${PANEL_ID}`)
+    ) return true;
+    const signedBoard = rankedWarBoardForView(view);
+    const board = signedBoard?.parentElement && signedBoard.isConnected !== false
+      ? signedBoard
+      : rankedWarUnsignedRosterCluster(view.enemyRoster);
+    const entries = rankedWarEnemyRowEntries(view.enemyRoster, board);
+    if (!entries.length) return true;
+    return entries.some(({ anchor, memberId, row }) => {
       const tools = Array.from(anchor.parentElement?.querySelectorAll?.(`.${INLINE_TOOLS_CLASS}`) || [])
         .find((candidate) => Number(candidate.dataset?.memberId || 0) === memberId);
-      const row = rankedWarRowForAnchor(anchor);
       const attackLink = rankedWarAttackLinkForMember(row, memberId);
       const rosterActions = attackLink
         ? Array.from(attackLink.parentElement?.querySelectorAll?.(`.${ROSTER_ACTIONS_CLASS}`) || [])
           .find((candidate) => Number(candidate.dataset?.memberId || 0) === memberId)
         : true;
-      return !tools || !rosterActions;
+      const dibsControlMissing = state.rosterDibsButtons
+        && core.dibsFeatureEnabled(state.settings)
+        && !rosterActions?.querySelector?.(".wc-dibs");
+      return !tools || !rosterActions || dibsControlMissing;
     });
   }
 
@@ -3618,7 +4136,7 @@
         return;
       }
       const outsideWarbuddy = mutations.some((mutation) => !mutation?.target?.closest?.(
-        `#${PANEL_ID}, #${TARGET_CONTEXT_ID}, #${INTEGRATED_WRAPPER_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}`
+        `#${PANEL_ID}, #${TARGET_CONTEXT_ID}, #${ROSTER_CONTEXT_ID}, #${INTEGRATED_WRAPPER_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}`
       ));
       if (!outsideWarbuddy) return;
       if (activeSurfaceMissing()) scheduleRender();
@@ -3656,7 +4174,12 @@
       closeDibsDetails();
     }
     if (!active) {
-      if (state.active || document.getElementById(PANEL_ID) || document.getElementById(TARGET_CONTEXT_ID)) {
+      if (
+        state.active
+        || document.getElementById(PANEL_ID)
+        || document.getElementById(TARGET_CONTEXT_ID)
+        || document.getElementById(ROSTER_CONTEXT_ID)
+      ) {
         stopTicker();
         const retainedForPeer = pauseLocalConnectionDemand();
         if (!retainedForPeer) {
@@ -3665,6 +4188,7 @@
         }
         document.getElementById(PANEL_ID)?.remove();
         removeTargetContext();
+        removeNativeRosterContext();
         removeInlineMemberTools();
         removeIntegratedMount(false);
       }
@@ -3711,8 +4235,14 @@
 
   registerMenuCommand("Warbuddy: diagnostics", () => {
     const routeMatches = core.isWarbuddyPageUrl(window.location.href);
+    const diagnosticView = sessionView();
+    const targetEligible = targetPageFactionEligible(diagnosticView);
+    const targetMount = targetPageMemberId() ? targetContextMountPoint() : null;
     const panel = document.getElementById(PANEL_ID);
     const targetContext = document.getElementById(TARGET_CONTEXT_ID);
+    const rosterContext = document.getElementById(ROSTER_CONTEXT_ID);
+    const targetContextRect = nativeAnchorRect(targetContext);
+    const rosterContextRect = nativeAnchorRect(rosterContext);
     const brokerDebug = tabBroker?.diagnostics?.() || { enabled: false, role: "standalone", leaderId: "", peerCount: 0 };
     const brokerLeader = !brokerDebug.enabled
       ? "n/a"
@@ -3734,6 +4264,17 @@
       `Panel mounted: ${panel ? "yes" : "no"}`,
       `Panel visible: ${panel ? getComputedStyle(panel).display !== "none" && getComputedStyle(panel).visibility !== "hidden" : "n/a"}`,
       `Native target context: ${targetContext ? "mounted" : "not mounted"}`,
+      `Native roster context: ${rosterContext ? "mounted" : "not mounted"}`,
+      `Target/war eligible: ${targetEligible ? "yes" : "no"}`,
+      `Registered faction: ${state.session?.factionId || "none"}`,
+      `View factions: own ${diagnosticView.ownFactionId || "none"}; enemy ${diagnosticView.enemyFactionId || "none"}`,
+      `War start: ${diagnosticView.alliedScore?.start || "none"}`,
+      `Tracker enabled value: ${String(state.settings?.enabled)}`,
+      `Profile name anchor: ${state.profileTargetId ? profileNameAnchor() ? "found" : "missing" : "n/a"}`,
+      `Roster filter anchor: ${isRosterModePage(diagnosticView) ? rankedWarFilterAnchor() ? "found" : "missing" : "n/a"}`,
+      `Target mount: ${targetMount?.parent ? targetMount.parent === document.body ? "body overlay" : "inline" : "none"}`,
+      `Target rectangle: ${targetContextRect ? `${Math.round(targetContextRect.left)},${Math.round(targetContextRect.top)} ${Math.round(targetContextRect.width)}x${Math.round(targetContextRect.height)}` : "none"}`,
+      `Roster rectangle: ${rosterContextRect ? `${Math.round(rosterContextRect.left)},${Math.round(rosterContextRect.top)} ${Math.round(rosterContextRect.width)}x${Math.round(rosterContextRect.height)}` : "none"}`,
       `Layout: ${state.displayMode}`,
       `Effective surface: ${state.displayMode === "floating" ? "floating panel with native indicators" : targetPageMemberId() ? "native target context" : isRosterModePage() ? "ranked-war roster" : "none"}`,
       `Phase: ${state.phase}`,
@@ -3814,16 +4355,21 @@
   window.addEventListener("offline", syncForegroundState);
   const handleViewportResize = () => {
     positionOpenDibsTip(document);
-    if (state.displayMode !== "floating" && isRosterModePage()) scheduleRender();
+    scheduleNativeOverlayPosition();
+    if (targetPageMemberId() || (state.displayMode !== "floating" && isRosterModePage())) scheduleRender();
   };
   window.addEventListener("resize", handleViewportResize);
   window.visualViewport?.addEventListener?.("resize", handleViewportResize);
+  window.addEventListener("scroll", scheduleNativeOverlayPosition, { passive: true });
+  window.visualViewport?.addEventListener?.("scroll", scheduleNativeOverlayPosition, { passive: true });
   window.addEventListener("hashchange", syncPageActivation);
   window.addEventListener("popstate", syncPageActivation);
   window.addEventListener("pageshow", start);
   window.addEventListener("pagehide", () => {
     if (state.routeTimer) clearInterval(state.routeTimer);
     state.routeTimer = 0;
+    if (state.overlayFrame) cancelAnimationFrame(state.overlayFrame);
+    state.overlayFrame = 0;
     stopTicker();
     tabBroker?.close();
     tabBroker = null;

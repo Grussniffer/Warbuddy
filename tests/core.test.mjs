@@ -484,6 +484,144 @@ describe("Warbuddy live state", () => {
     assert.equal(core.trustedClockOffset("not-a-time", deviceNowMs), undefined);
   });
 
+  it("anchors timer decisions to backend time across client skew and later device-clock jumps", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const clockSource = sourceSection(source, "function tornPageNowMs", "function removeInlineMemberTools");
+    const serverNowMs = Date.UTC(2026, 7, 29, 12, 0, 0);
+    let deviceNowMs = serverNowMs + (10 * 60_000);
+    let monotonicNow = 1_000;
+    const context = {
+      core,
+      Date: { now: () => deviceNowMs, UTC: Date.UTC },
+      performance: { now: () => monotonicNow },
+      unsafeWindow: { getCurrentTimestamp: () => deviceNowMs / 1000 },
+      window: {},
+      REQUEST_TIMEOUT_MS: 30_000,
+      CLOCK_BACKWARD_TOLERANCE_MS: 250,
+      state: {
+        nowMs: deviceNowMs,
+        clockOffsetMs: 0,
+        clockSource: "device",
+        clockReady: false,
+        clockAnchorServerMs: 0,
+        clockAnchorMonotonicMs: Number.NaN,
+      },
+      result: null,
+    };
+
+    runInNewContext(`${clockSource}\nsyncTrustedClock(${serverNowMs}, "session", ${deviceNowMs}); result = { nowMs: trustedNowMs(), ready: state.clockReady, source: state.clockSource };`, context);
+    assert.equal(context.result.ready, true);
+    assert.equal(context.result.source, "session");
+    assert.equal(context.result.nowMs, serverNowMs);
+
+    const claimant = { member_id: 1, status: { userStatus: "Okay" }, location: { current: "Torn" } };
+    const target = {
+      member_id: 2,
+      status: { userStatus: "Hospital", untill: serverNowMs + (5 * 60_000) + 1 },
+      location: { current: "Torn" },
+    };
+    const eligibility = (nowMs) => core.dibsClaimEligibility({
+      claimant,
+      target,
+      claimantRosterFresh: true,
+      targetRosterFresh: true,
+    }, nowMs);
+    assert.equal(eligibility(context.result.nowMs).state, "hospital_too_early");
+
+    deviceNowMs += 60 * 60_000;
+    monotonicNow += 1;
+    runInNewContext("result = { nowMs: trustedNowMs() };", context);
+    assert.equal(context.result.nowMs, serverNowMs + 1);
+    assert.equal(eligibility(context.result.nowMs).state, "hospitalized");
+
+    runInNewContext(`result = { applied: syncTrustedClock(${serverNowMs - 5_000}, "delayed", Date.now()), nowMs: trustedNowMs() };`, context);
+    assert.equal(context.result.applied, false);
+    assert.equal(context.result.nowMs, serverNowMs + 1);
+  });
+
+  it("fails Dibs closed until an explicit backend clock sample is ready", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const contextSource = sourceSection(source, "function dibsClaimContext", "function syncIntegratedMemberTools");
+    const context = {
+      state: { clockReady: false },
+      result: null,
+    };
+    runInNewContext(`${contextSource}\nresult = dibsClaimContext({}, {}, undefined);`, context);
+    assert.equal(context.result.eligible, false);
+    assert.equal(context.result.state, "clock_syncing");
+    assert.equal(context.result.reason, "Synchronizing server time.");
+  });
+
+  it("keeps local data freshness independent from the server clock offset", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const freshnessSource = sourceSection(source, "const dataIsStale", "const currentEnemyFactionId");
+    let deviceNowMs = Date.UTC(2026, 7, 29, 12, 10, 0);
+    const context = {
+      Date: { now: () => deviceNowMs },
+      DATA_STALE_MS: 45_000,
+      state: {
+        lastLiveDataAt: deviceNowMs,
+        socketOpenedAt: 0,
+        nowMs: deviceNowMs - (10 * 60_000),
+        rosterDataAt: new Map([["enemy", deviceNowMs]]),
+      },
+      socketIsOpen: () => false,
+      transportIsLive: () => true,
+      isOnline: () => true,
+      result: null,
+    };
+    runInNewContext(`${freshnessSource}\nresult = { stale: dataIsStale(), age: liveDataAgeMs(), fresh: rosterIsFresh("enemy") };`, context);
+    assert.deepEqual({ ...context.result }, { stale: false, age: 0, fresh: true });
+
+    deviceNowMs += 45_001;
+    runInNewContext("result = { stale: dataIsStale(), age: liveDataAgeMs(), fresh: rosterIsFresh(\"enemy\") };", context);
+    assert.deepEqual({ ...context.result }, { stale: true, age: 45_001, fresh: false });
+  });
+
+  it("calibrates and relays only authoritative server clock samples", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const sessionSource = compactSource(sourceSection(source, "async function requestCompanionSession", "function applyCompanionSession"));
+    const eventSource = compactSource(sourceSection(source, "function applyEvent", "function applyFallbackSnapshot"));
+    const sharedTransportSource = compactSource(sourceSection(source, "function sharedTransportPayload", "function applySharedState"));
+    const sharedDataSource = compactSource(sourceSection(source, "function handleTabBrokerData", "function handleTabBrokerRequest"));
+    const socketSource = compactSource(sourceSection(source, "function handleSocketMessage", "function scheduleReconnect"));
+    const outcomeSource = compactSource(sourceSection(source, "async function recordAttackOutcome", "function inspectAttackOutcomeNode"));
+    const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+
+    assert.match(sessionSource, /const responseReceivedAt = Date\.now\(\)/);
+    assert.match(sessionSource, /response\?\.serverTime \|\| response\?\.session\?\.serverTime/);
+    assert.match(sessionSource, /"session", responseReceivedAt/);
+    assert.doesNotMatch(sessionSource, /requestStartedAt|responseReceivedAt - requestStartedAt/);
+    assert.match(eventSource, /topic === "war_dibs" \? payload\?\.generatedAt : undefined/);
+    assert.match(eventSource, /syncTrustedClock\(eventServerTime, `event:\$\{topic\}`\)/);
+    assert.match(sharedTransportSource, /serverTime: state\.clockReady \? trustedNowMs\(\) : null/);
+    assert.match(sharedTransportSource, /syncTrustedClock\(payload\.serverTime, "shared-tab"\)/);
+    assert.doesNotMatch(sharedTransportSource, /syncTrustedClock\(payload\.generatedAt/);
+    assert.match(sharedDataSource, /"shared-live-event", payload\.serverTime/);
+    assert.match(socketSource, /const envelopeServerTime = message\?\.serverTime \|\| message\?\.generatedAt/);
+    assert.match(socketSource, /payload: message\.payload, serverTime: envelopeServerTime/);
+    assert.match(outcomeSource, /core\.activeDibsClaim\(state\.dibs, targetMemberId, trustedNowMs\(\)\)/);
+    assert.ok(renderSource.indexOf("state.nowMs = trustedNowMs()") < renderSource.indexOf("const view = sessionView()"));
+  });
+
+  it("uses legacy generatedAt clock samples only for Dibs events", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const eventSource = sourceSection(source, "function applyEvent", "function applyFallbackSnapshot");
+    const samples = [];
+    const context = {
+      core: { dibsFeatureEnabled: () => true },
+      Date: { now: () => 1_000 },
+      state: { lastLiveDataAt: 0, scores: new Map(), retaliation: { attacks: [] } },
+      syncTrustedClock: (value) => samples.push(value),
+      applyDibsSnapshot() {},
+      scheduleRender() {},
+      setTimeout() { return 0; },
+      result: null,
+    };
+    runInNewContext(`${eventSource}\napplyEvent("war_dibs", { generatedAt: "2026-08-29T12:00:00.000Z" }, "test"); applyEvent("score", { generatedAt: "2026-08-29T11:00:00.000Z", scores: [] }, "test");`, context);
+    assert.deepEqual(samples, ["2026-08-29T12:00:00.000Z", undefined]);
+  });
+
   it("applies full snapshots and ordered deltas", () => {
     const full = core.applyRosterUpdate(undefined, {
       version: 4,
@@ -1078,7 +1216,7 @@ describe("Warbuddy panel state", () => {
     assert.match(reconnectSource, /if \(!state\.authTerminal\) scheduleReconnect\(\)/);
     assert.match(sessionRefreshSource, /if \(!isForeground\(\)\) return false/);
     assert.match(sessionRefreshSource, /!state\.session \|\| !state\.token/);
-    assert.match(sessionRefreshSource, /expiresAt <= Date\.now\(\) \+ 30_000/);
+    assert.match(sessionRefreshSource, /expiresAt <= trustedNowMs\(\) \+ 30_000/);
     assert.match(tickerSource, /!tabBroker\.isLeader\(\).*tabBroker\.hasLeader\(\).*localSessionNeedsRefresh\(\)/);
     assert.doesNotMatch(tickerSource, /tabBroker\.(?:broadcast|request)/);
     assert.match(renderSource, /const showKeyEditor = !savedKey \|\| state\.keyEditorOpen \|\| state\.authTerminal/);
@@ -1247,8 +1385,8 @@ describe("Warbuddy panel state", () => {
     assert.match(fallbackSource, /source: "fallback-hydration"/);
     assert.match(sharedStateSource, /source: "shared-hydration"/);
     assert.doesNotMatch(sharedStateSource, /state\.dibs = payload\.dibs/);
-    assert.match(sharedDataSource, /applyEvent\(String\(payload\.topic\), payload\.payload, "shared-live-event"\)/);
-    assert.match(socketSource, /applyEvent\(String\(message\.topic\), message\.payload, "websocket"\)/);
+    assert.match(sharedDataSource, /applyEvent\(String\(payload\.topic\), payload\.payload, "shared-live-event", payload\.serverTime\)/);
+    assert.match(socketSource, /applyEvent\(String\(message\.topic\), message\.payload, "websocket", envelopeServerTime\)/);
     assert.match(sharedRequestSource, /const leaderId = tabBroker\.leaderId\(\)/);
     assert.match(sharedRequestSource, /requestSequence !== state\.sharedStateRequestSequence/);
     assert.match(sharedRequestSource, /tabBroker\?\.leaderId\(\) !== leaderId/);
@@ -1356,7 +1494,7 @@ describe("Warbuddy panel state", () => {
     const surfaceSource = compactSource(sourceSection(source, "const isRosterModePage", "const backendUrl"));
 
     assert.ok(source.includes("const isForeground = () => state.active\n    && hasWarbuddySurface()\n    && document.visibilityState !== \"hidden\""));
-    assert.match(surfaceSource, /const hasWarbuddySurface = \(\) => !!targetPageMemberId\(\) \|\| isRosterModePage\(\) \|\| state\.displayMode === "floating"/);
+    assert.match(surfaceSource, /const hasWarbuddySurface = \(\) => !!targetPageMemberId\(\) \|\| isRosterBootstrapPage\(\) \|\| state\.displayMode === "floating"/);
     assert.doesNotMatch(source, /state\.collapsed|COLLAPSED_STORAGE/);
     assert.doesNotMatch(statusSource, /collapsed|Expand and resume|Collapse and pause/);
     assert.match(statusSource, /if \(document\.visibilityState === "hidden"\) return \{ label: "Paused while hidden", tone: "" \}/);
@@ -1364,7 +1502,7 @@ describe("Warbuddy panel state", () => {
 });
 
 describe("Warbuddy userscript source contracts", () => {
-  it("uses native surfaces by default and mounts the full controls as floating only when opted in", async () => {
+  it("uses native surfaces by default, reuses the full controls inline, and keeps floating optional", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const modeSource = compactSource(sourceSection(source, "function setDisplayMode", "async function getProfileWithKey"));
     const mountSource = compactSource(sourceSection(source, "function resolvePanelMount", "async function getProfileWithKey"));
@@ -1376,21 +1514,28 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(source, /displayMode: core\.normalizeDisplayMode\(storage\.get\(DISPLAY_MODE_STORAGE, ""\)\)/);
     assert.match(modeSource, /const nextMode = core\.normalizeDisplayMode\(value\)/);
     assert.match(modeSource, /storage\.set\(DISPLAY_MODE_STORAGE, nextMode\)/);
-    assert.match(modeSource, /removeIntegratedMount\(true\).*scheduleRender\(\).*syncForegroundState\(\)/);
+    assert.match(modeSource, /if \(nextMode === "floating"\) \{ removeIntegratedMount\(true\); \} else \{ document\.getElementById\(PANEL_ID\)\?\.remove\(\); removeIntegratedMount\(false\); \} scheduleRender\(\); syncForegroundState\(\)/);
     assert.doesNotMatch(modeSource, /new WebSocket|connectSocket|startFallbackPolling|setInterval|requestJson/);
     assert.match(mountSource, /if \(state\.displayMode === "floating"\) \{ removeIntegratedMount\(true\); return \{ mount: document\.body, placement: "floating", fallback: false \}/);
-    assert.match(source, /const isRosterModePage = \(view = null\) => core\.isOwnRankedWarPageUrl\(/);
-    assert.match(mountSource, /const desiredPlacement = isRosterModePage\(view\) \? "rank" : ""/);
-    assert.match(mountSource, /createRankedWarHost\(view, board\)/);
-    assert.match(mountSource, /placement: "inline", fallback: false/);
+    assert.match(source, /const isRosterBootstrapPage = \(\) => core\.isRankedWarPageUrl\(window\.location\.href\)/);
+    assert.match(source, /if \(core\.isOwnRankedWarPageUrl\(window\.location\.href, ownFactionId\)\) return true/);
+    assert.match(source, /if \(!view \|\| !targetPageFactionEligible\(view\)\) return false/);
+    assert.match(source, /core\.rankedWarPageFactionId\(window\.location\.href\).*Number\(view\.enemyFactionId \|\| 0\)/);
+    assert.doesNotMatch(mountSource, /isRosterModePage|rankedWarBoardForView|createRankedWarHost|placement: "inline"/);
     assert.match(mountSource, /return \{ mount: null, placement: "none", fallback: false \}/);
     assert.match(inlineSource, /isRosterModePage\(view\)/);
     assert.doesNotMatch(inlineSource, /state\.displayMode/, "ranked-row Retal and Dibs indicators stay native in both layouts");
     assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
     assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\)/);
-    assert.match(renderSource, /if \(state\.displayMode !== "floating" && targetPage\)/);
-    assert.match(renderSource, /if \(state\.displayMode !== "floating" && !rankedWarPage\)/);
-    assert.match(renderSource, /const panelMarkup = `\$\{rosterMode \? rosterHeader : standardHeader\}<div class="wc-body">\$\{panelBody\}<\/div>`/);
+    assert.match(renderSource, /if \(state\.displayMode !== "floating"\)/);
+    assert.match(renderSource, /const rosterContextReady = syncNativeRosterContext\(view\)/);
+    assert.match(renderSource, /syncIntegratedMemberTools\(view\)/);
+    assert.match(renderSource, /document\.querySelector\?\.\(`#\$\{ROSTER_CONTEXT_ID\} #\$\{INTEGRATED_HOST_ID\}`\)/);
+    assert.match(renderSource, /mountState = \{ mount: inlineMount, placement: "accordion", fallback: false \}/);
+    assert.ok(renderSource.indexOf('if (state.displayMode !== "floating")') < renderSource.indexOf("let panel = document.getElementById(PANEL_ID)"));
+    assert.match(renderSource, /const inlineAccordion = mountState\.placement === "accordion"/);
+    assert.match(renderSource, /panel\.classList\.toggle\("wc-inline-accordion", inlineAccordion\)/);
+    assert.match(renderSource, /const panelMarkup = `\$\{inlineAccordion \? "" : rosterMode \? rosterHeader : standardHeader\}<div class="wc-body">\$\{panelBody\}<\/div>`/);
     assert.match(renderSource, /\[ \["native", "Native \(default\)"\], \["floating", "Floating"\], \]/);
     assert.match(source, /registerMenuCommand\("Warbuddy: use native layout", \(\) => setDisplayMode\("native"\)\)/);
     assert.match(source, /registerMenuCommand\("Warbuddy: use floating panel", \(\) => setDisplayMode\("floating"\)\)/);
@@ -1405,10 +1550,45 @@ describe("Warbuddy userscript source contracts", () => {
     assert.equal(core.isOwnRankedWarPageUrl("https://www.torn.com/factions.php#/war/rank", 399), false);
     assert.equal(core.isRankedWarPageUrl("https://www.torn.com/factions.php?step=your&type=1#/tab=armoury"), false);
     assert.equal(core.isRankedWarPageUrl("https://example.com/factions.php#/war/rank"), false);
+    assert.equal(core.rankedWarPageFactionId("https://www.torn.com/factions.php?step=profile&ID=400#/war/rank"), 400);
+    assert.equal(core.rankedWarPageFactionId("https://www.torn.com/factions.php?step=your&type=1#/war/rank"), 0);
+    assert.equal(core.rankedWarPageFactionId("https://www.torn.com/factions.php?step=profile&ID=400#/tab=armoury"), 0);
     assert.equal(core.profileMemberIdFromUrl("https://www.torn.com/profiles.php?XID=3601225"), 3601225);
     assert.equal(core.profileMemberIdFromUrl("/profiles.php?xid=3601225"), 3601225);
     assert.equal(core.profileMemberIdFromUrl("https://example.com/profiles.php?XID=3601225"), 0);
     assert.equal(core.profileMemberIdFromUrl("https://www.torn.com/factions.php?ID=3601225"), 0);
+  });
+
+  it("bootstraps ranked-war transport broadly but renders only the own or confirmed opponent roster", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const routeSource = sourceSection(source, "const isRosterBootstrapPage", "const targetPageMemberId");
+    const evaluate = (href, view, eligible = true) => {
+      const context = {
+        result: null,
+        view,
+        window: { location: { href } },
+        state: { session: { factionId: "399" } },
+        core: {
+          isRankedWarPageUrl: core.isRankedWarPageUrl,
+          isOwnRankedWarPageUrl: core.isOwnRankedWarPageUrl,
+          rankedWarPageFactionId: core.rankedWarPageFactionId,
+        },
+        targetPageFactionEligible() { return eligible; },
+      };
+      runInNewContext(
+        `${routeSource}\nresult = { bootstrap: isRosterBootstrapPage(), roster: isRosterModePage(view) };`,
+        context
+      );
+      return context.result;
+    };
+    const activeView = { ownFactionId: "399", enemyFactionId: "400" };
+    const opponentUrl = "https://www.torn.com/factions.php?step=profile&ID=400#/war/rank";
+
+    assert.equal(evaluate(opponentUrl, activeView).bootstrap, true);
+    assert.equal(evaluate(opponentUrl, activeView).roster, true);
+    assert.equal(evaluate(opponentUrl, activeView, false).roster, false);
+    assert.equal(evaluate("https://www.torn.com/factions.php?step=profile&ID=401#/war/rank", activeView).roster, false);
+    assert.equal(evaluate("https://www.torn.com/factions.php?step=your&type=1#/war/rank", null).roster, true);
   });
 
   it("matches each enemy roster row to that member's own Attack control", async () => {
@@ -1461,6 +1641,7 @@ describe("Warbuddy userscript source contracts", () => {
         `${resolverSource}\nresult = rankedWarRowForAnchor(anchor); link = rankedWarAttackLinkForMember(row, ${targetId});`,
         context
       );
+      context.label = label;
       return context;
     };
 
@@ -1469,54 +1650,290 @@ describe("Warbuddy userscript source contracts", () => {
     assert.equal(core.attackPageTargetId(matched.link.href), 42);
 
     const wrongAttack = resolve({ attackIds: [99] });
-    assert.equal(wrongAttack.result, null);
+    assert.equal(wrongAttack.result, wrongAttack.row);
     assert.equal(wrongAttack.link, null);
 
+    const duplicateTargetProfiles = resolve({
+      attackIds: [42],
+      extraProfiles: [profileLink(42)],
+    });
+    assert.equal(duplicateTargetProfiles.result, duplicateTargetProfiles.row);
+
     const mixedProfiles = resolve({ attackIds: [42], extraProfiles: [profileLink(99)] });
-    assert.equal(mixedProfiles.result, null);
+    assert.equal(mixedProfiles.result, mixedProfiles.label);
   });
 
-  it("refuses to discover a roster board through a permissive enemy-row fallback", async () => {
+  it("resolves the exact own-war enemy roster from backend IDs without sidebar or common-board dependence", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
-    const enemyAnchorSource = compactSource(sourceSection(
-      source,
-      "function enemyProfileAnchors",
-      "function rankedWarAttackLinkForMember"
-    ));
     const boardSource = sourceSection(
       source,
-      "function rankedWarBoardForView",
+      "function hasRankedWarRosterSignature",
       "function markRankedWarBoard"
     );
-    const ownAnchor = {};
-    const enemyAnchor = {};
-    const ownRow = {};
-    let enemyFallbackCalls = 0;
-    let commonAncestorCalls = 0;
-    const context = {
-      result: {},
-      view: { ownRoster: [{}], enemyRoster: [{}] },
-      document: { body: {}, documentElement: {} },
-      rosterProfileAnchors() { return [ownAnchor]; },
-      enemyProfileAnchors() { return [enemyAnchor]; },
-      rankedWarOwnRowForAnchor(anchor) {
-        if (anchor === enemyAnchor) {
-          enemyFallbackCalls += 1;
-          return {};
-        }
-        return ownRow;
-      },
-      rankedWarRowForAnchor() { return null; },
-      lowestCommonAncestor() { commonAncestorCalls += 1; return {}; },
+    const evaluate = (enemyMatches = 2, withRosterHeader = true) => {
+      const enemyRoster = [{ member_id: 3 }, { member_id: 4 }];
+      const node = ({ tagName = "DIV", excluded = false, text = "" } = {}) => ({
+        tagName,
+        excluded,
+        textContent: text,
+        parentElement: null,
+        previousElementSibling: null,
+        children: [],
+        isConnected: true,
+        contains(target) {
+          for (let current = target; current; current = current.parentElement) {
+            if (current === this) return true;
+          }
+          return false;
+        },
+        closest(selector) {
+          for (let current = this; current; current = current.parentElement) {
+            if (current.excluded && /chat|sidebar|complementary|aside/i.test(selector)) return current;
+          }
+          return null;
+        },
+        querySelectorAll(selector) {
+          const matches = [];
+          const visit = (current) => {
+            for (const child of current.children || []) {
+              if (selector.includes("profiles.php") && String(child.href || "").includes("profiles.php")) matches.push(child);
+              visit(child);
+            }
+          };
+          visit(this);
+          return matches;
+        },
+      });
+      const append = (parent, ...children) => {
+        parent.children = children;
+        children.forEach((child, index) => {
+          child.parentElement = parent;
+          child.previousElementSibling = children[index - 1] || null;
+        });
+      };
+      const anchor = (id) => ({
+        ...node({ tagName: "A" }),
+        href: `https://www.torn.com/profiles.php?XID=${id}`,
+        getAttribute() { return this.href; },
+        row: null,
+      });
+      const rowWith = (id) => {
+        const row = node();
+        const link = anchor(id);
+        link.row = row;
+        append(row, link);
+        return { row, link };
+      };
+      const body = node({ tagName: "BODY" });
+      const documentElement = node({ tagName: "HTML" });
+      const main = node({ tagName: "MAIN" });
+      const ownCluster = node();
+      const enemyCluster = node();
+      const enemyHeader = node({
+        text: withRosterHeader ? "Members Level Est Score Status" : "Targets Online Attack",
+      });
+      const sidebar = node({ tagName: "ASIDE", excluded: true });
+      const ownRows = [rowWith(1), rowWith(2)];
+      const enemyRows = [rowWith(3), rowWith(4)].slice(0, enemyMatches);
+      const duplicate = rowWith(3);
+      append(sidebar, duplicate.row);
+      append(ownCluster, ...ownRows.map(({ row }) => row));
+      append(enemyCluster, ...enemyRows.map(({ row }) => row));
+      append(main, ownCluster, enemyHeader, enemyCluster);
+      append(body, sidebar, main);
+      const allAnchors = [duplicate.link, ...ownRows.map(({ link }) => link), ...enemyRows.map(({ link }) => link)];
+      const context = {
+        result: null,
+        view: { enemyRoster },
+        PANEL_ID: "warbuddy-panel",
+        INTEGRATED_HOST_ID: "warbuddy-integrated-host",
+        TARGET_CONTEXT_ID: "warbuddy-target-context",
+        INLINE_TOOLS_CLASS: "warbuddy-inline-tools",
+        ROSTER_ACTIONS_CLASS: "warbuddy-roster-actions",
+        document: {
+          body,
+          documentElement,
+          querySelector() { return main; },
+          querySelectorAll(selector) { return selector.includes("profiles.php") ? allAnchors : []; },
+        },
+        core: {
+          profileMemberIdFromUrl(value) {
+            return Number(new URL(value, "https://www.torn.com/").searchParams.get("XID") || 0);
+          },
+        },
+        rankedWarRowForAnchor(profileAnchor) { return profileAnchor?.row || null; },
+      };
+      runInNewContext(`${boardSource}\nresult = rankedWarBoardForView(view);`, context);
+      return { result: context.result, enemyCluster, sidebar };
     };
-    runInNewContext(`${boardSource}\nresult = rankedWarBoardForView(view);`, context);
 
-    assert.equal(context.result, null);
-    assert.equal(enemyFallbackCalls, 0);
-    assert.equal(commonAncestorCalls, 0);
-    assert.match(enemyAnchorSource, /!rankedWarRowForAnchor\(anchor\)/);
-    assert.doesNotMatch(enemyAnchorSource, /rankedWarOwnRowForAnchor/);
-    assert.doesNotMatch(boardSource, /rankedWarOwnRowForAnchor\(enemyAnchor\)/);
+    const verified = evaluate(2);
+    assert.equal(verified.result, verified.enemyCluster);
+    assert.notEqual(verified.result, verified.sidebar);
+    assert.equal(evaluate(1).result, null);
+    assert.equal(evaluate(2, false).result, null, "an in-main two-target attack widget is not a roster");
+    assert.match(boardSource, /const mainScope = document\.querySelector\?\.\("#mainContainer, main, \[role='main'\]"\)/);
+    assert.match(boardSource, /\[class\*='chat' i\]/);
+    assert.match(boardSource, /\[class\*='sidebar' i\]/);
+    assert.match(boardSource, /const requiredMatches = Math\.min\(2, memberIds\.size\)/);
+    assert.match(boardSource, /function hasRankedWarRosterSignature\(root\)/);
+    assert.match(boardSource, /\/\\bmembers\?\\b\/i\.test\(text\)/);
+    assert.match(boardSource, /\/\\bstatus\\b\/i\.test\(text\)/);
+    assert.match(boardSource, /\/\\b\(\?:level\|est\|score\)\\b\/i\.test\(text\)/);
+    assert.match(boardSource, /if \(!hasRankedWarRosterSignature\(root\)\) continue/);
+    assert.match(boardSource, /const profileIdLimit = Math\.min/);
+    assert.match(boardSource, /const profileLinkLimit = Math\.min/);
+    assert.match(boardSource, /return rankedWarRosterCluster\(view\?\.enemyRoster, rankedWarRowForAnchor\)/);
+    assert.doesNotMatch(boardSource, /lowestCommonAncestor\(ownRow, enemyRow\)|requiredOwnMatches|requiredEnemyMatches/);
+  });
+
+  it("restores native no-Attack roster tools from a bounded backend-matched cluster", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const rowSource = sourceSection(
+      source,
+      "function rankedWarAttackLinkForMember",
+      "function rankedWarOwnRowForAnchor"
+    );
+    const clusterSource = sourceSection(
+      source,
+      "function rankedWarUnsignedRosterCluster",
+      "function markRankedWarBoard"
+    );
+    const ensureSource = sourceSection(
+      source,
+      "function ensureInlineMemberTools",
+      "function syncIntegratedMemberTools"
+    );
+    const createdTags = [];
+    const element = ({ text = "", image = false, excluded = false } = {}) => ({
+      textContent: text,
+      image,
+      excluded,
+      className: "",
+      dataset: {},
+      isConnected: true,
+      parentElement: null,
+      children: [],
+      contains(target) {
+        for (let current = target; current; current = current.parentElement) {
+          if (current === this) return true;
+        }
+        return false;
+      },
+      closest() {
+        for (let current = this; current; current = current.parentElement) {
+          if (current.excluded) return current;
+        }
+        return null;
+      },
+      querySelector(selector) {
+        if (/img|picture|svg/.test(selector) && this.image) return {};
+        return this.querySelectorAll(selector)[0] || null;
+      },
+      querySelectorAll(selector) {
+        const matches = [];
+        const visit = (current) => {
+          for (const child of current.children || []) {
+            if (selector.includes("profiles.php") && String(child.href || "").includes("profiles.php")) matches.push(child);
+            if (selector.includes("warbuddy-inline-tools") && String(child.className || "").includes("warbuddy-inline-tools")) matches.push(child);
+            visit(child);
+          }
+        };
+        visit(this);
+        return matches;
+      },
+      addEventListener() {},
+    });
+    const append = (parent, ...children) => {
+      parent.children = children;
+      children.forEach((child) => { child.parentElement = parent; });
+    };
+    const profile = (id, options = {}) => {
+      const link = element(options);
+      link.href = "https://www.torn.com/profiles.php?XID=" + id;
+      link.getAttribute = (name) => name === "href" ? link.href : "";
+      link.insertAdjacentElement = (_position, child) => {
+        const siblings = link.parentElement.children;
+        siblings.splice(siblings.indexOf(link) + 1, 0, child);
+        child.parentElement = link.parentElement;
+      };
+      return link;
+    };
+    const memberRow = (id, duplicate = false) => {
+      const row = element();
+      const cell = element();
+      const avatar = duplicate ? profile(id, { image: true }) : null;
+      const name = profile(id, { text: "Member " + id });
+      append(cell, ...[avatar, name].filter(Boolean));
+      append(row, cell);
+      return { row, avatar, name };
+    };
+    const evaluate = (withRealRoster) => {
+      const body = element();
+      const html = element();
+      const main = element();
+      const roster = element();
+      const rows = [memberRow(3, true), memberRow(4), memberRow(5)];
+      append(roster, ...rows.map(({ row }) => row));
+      const decoy = element();
+      append(decoy, memberRow(7).row, memberRow(8).row);
+      const mixed = element();
+      append(mixed, profile(6, { text: "Member 6" }), profile(99, { text: "Other" }));
+      const sidebar = element({ excluded: true });
+      append(sidebar, memberRow(6).row);
+      append(main, ...[withRealRoster ? roster : null, decoy, mixed, sidebar].filter(Boolean));
+      append(body, main);
+      const view = { enemyRoster: [3, 4, 5, 6, 7, 8].map((member_id) => ({ member_id })) };
+      const context = {
+        result: null,
+        entries: [],
+        view,
+        PANEL_ID: "warbuddy-panel",
+        INTEGRATED_HOST_ID: "warbuddy-integrated-host",
+        TARGET_CONTEXT_ID: "warbuddy-target-context",
+        INLINE_TOOLS_CLASS: "warbuddy-inline-tools",
+        ROSTER_ACTIONS_CLASS: "warbuddy-roster-actions",
+        document: {
+          body,
+          documentElement: html,
+          querySelector() { return main; },
+          createElement(tag) {
+            createdTags.push(tag);
+            return element();
+          },
+        },
+        core: {
+          profileMemberIdFromUrl(value) {
+            return Number(new URL(value, "https://www.torn.com/").searchParams.get("XID") || 0);
+          },
+          attackPageTargetId() { return 0; },
+        },
+        handleInlineToolAction() {},
+      };
+      runInNewContext(
+        rowSource + "\n" + clusterSource + "\n" + ensureSource
+          + "\nresult = rankedWarUnsignedRosterCluster(view.enemyRoster);"
+          + "\nentries = rankedWarEnemyRowEntries(view.enemyRoster, result);"
+          + "\nentries.forEach(({ anchor, memberId }) => ensureInlineMemberTools(anchor, memberId));",
+        context
+      );
+      return { ...context, roster, rows };
+    };
+
+    const restored = evaluate(true);
+    assert.equal(core.isOwnRankedWarPageUrl(
+      "https://www.torn.com/factions.php?step=your&type=1#/war/rank",
+      399
+    ), true);
+    assert.equal(restored.result, restored.roster);
+    assert.deepEqual(Array.from(restored.entries, ({ memberId }) => memberId), [3, 4, 5]);
+    assert.equal(restored.entries[0].anchor, restored.rows[0].name);
+    assert.equal(restored.rows[0].name.parentElement.children[2].className, "warbuddy-inline-tools");
+    assert.ok(createdTags.length >= 3 && createdTags.every((tag) => tag === "span"));
+
+    const decoyOnly = evaluate(false);
+    assert.equal(decoyOnly.result, null);
+    assert.deepEqual(Array.from(decoyOnly.entries), []);
   });
 
   it("restores missing target and ranked-war native surfaces", async () => {
@@ -1531,22 +1948,33 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(missingSource, /Number\(context\.dataset\?\.memberId \|\| 0\) !== targetPageMemberId\(\)/);
     assert.match(missingSource, /!context\.querySelector\?\.\("\.wc-native-brand"\) \|\| floatingPanelMissing/);
     assert.match(missingSource, /if \(!isRosterModePage\(view\)\) return floatingPanelMissing/);
-    assert.match(missingSource, /const board = rankedWarBoardForView\(view\)/);
-    assert.match(missingSource, /if \(!board\?\.parentElement \|\| board\.isConnected === false\) return floatingPanelMissing/);
-    assert.match(missingSource, /if \(!document\.getElementById\(PANEL_ID\)\) return true/);
-    assert.match(missingSource, /const anchors = rosterProfileAnchors\(view\.enemyRoster, board\)/);
-    assert.match(missingSource, /const row = rankedWarRowForAnchor\(anchor\); const attackLink = rankedWarAttackLinkForMember\(row, memberId\)/);
+    assert.match(missingSource, /if \(state\.displayMode === "floating"\) return floatingPanelMissing/);
+    assert.match(missingSource, /const rosterContext = document\.getElementById\(ROSTER_CONTEXT_ID\)/);
+    assert.match(missingSource, /if \(!targetPageFactionEligible\(view\)\) return !!rosterContext/);
+    assert.match(missingSource, /const rosterMountPoint = rankedWarRosterContextMountPoint\(\)/);
+    assert.match(missingSource, /String\(rosterContext\.tagName \|\| ""\)\.toUpperCase\(\) !== "DETAILS"/);
+    assert.match(missingSource, /!rosterMountPoint\?\.parent \|\| rosterContext\.parentNode !== rosterMountPoint\.parent/);
+    assert.match(missingSource, /const signedBoard = rankedWarBoardForView\(view\)/);
+    assert.match(missingSource, /: rankedWarUnsignedRosterCluster\(view\.enemyRoster\)/);
+    assert.doesNotMatch(missingSource, /if \(!document\.getElementById\(PANEL_ID\)\) return true/);
+    assert.match(missingSource, /const entries = rankedWarEnemyRowEntries\(view\.enemyRoster, board\)/);
+    assert.match(missingSource, /if \(!entries\.length\) return true/);
+    assert.match(missingSource, /entries\.some\(\(\{ anchor, memberId, row \}\) =>/);
+    assert.match(missingSource, /const attackLink = rankedWarAttackLinkForMember\(row, memberId\)/);
     assert.doesNotMatch(missingSource, /const anchors = enemyProfileAnchors\(view\)/);
-    assert.match(missingSource, /return !tools \|\| !rosterActions/);
+    assert.match(missingSource, /const dibsControlMissing = state\.rosterDibsButtons/);
+    assert.match(missingSource, /!rosterActions\?\.querySelector\?\.\("\.wc-dibs"\)/);
+    assert.match(missingSource, /return !tools \|\| !rosterActions \|\| dibsControlMissing/);
     assert.match(observerSource, /if \(window\.location\.href !== state\.lastPageHref\) \{ syncPageActivation\(\); return; \}/);
     assert.match(observerSource, /const outsideWarbuddy = mutations\.some/);
+    assert.match(observerSource, /#\$\{ROSTER_CONTEXT_ID\}/);
     assert.match(observerSource, /if \(!outsideWarbuddy\) return/);
     assert.match(observerSource, /if \(activeSurfaceMissing\(\)\) scheduleRender\(\)/);
     assert.match(observerSource, /observe\(document\.body, \{ childList: true, subtree: true \}\)/);
     assert.match(heartbeatSource, /href !== state\.lastPageHref \|\| activeSurfaceMissing\(\)/);
   });
 
-  it("waits for a verified common board before mounting the ranked-war strip", async () => {
+  it("requires a bounded semantic enemy-roster cluster before decorating native ranked-war rows", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const rowSource = compactSource(sourceSection(
       source,
@@ -1554,19 +1982,21 @@ describe("Warbuddy userscript source contracts", () => {
       "function resolvePanelMount"
     ));
     const mountSource = compactSource(sourceSection(source, "function resolvePanelMount", "async function getProfileWithKey"));
+    const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
     const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
     const wrapperRoot = compactSource(styleSource.match(/#\$\{INTEGRATED_WRAPPER_ID\} \{([^}]*)\}/)?.[1]);
 
     assert.match(source, /const SAFE_INTEGRATED_PARENT_DISPLAYS = new Set\(\["block", "flow-root", "list-item"\]\)/);
+    assert.match(rowSource, /function hasRankedWarRosterSignature\(root\)/);
+    assert.match(rowSource, /function rankedWarRosterCluster\(roster, rowForAnchor = rankedWarRowForAnchor\)/);
     assert.match(rowSource, /function rankedWarBoardForView\(view\)/);
-    assert.match(rowSource, /lowestCommonAncestor\(ownRow, enemyRow\)/);
-    assert.match(rowSource, /board\.contains\?\.\(ownRow\)/);
-    assert.match(rowSource, /board\.contains\?\.\(enemyRow\)/);
-    assert.match(rowSource, /if \(best\) return best; return null/);
-    assert.doesNotMatch(rowSource, /const domRows/);
-    assert.match(rowSource, /const ownAnchors = rosterProfileAnchors\(view\?\.ownRoster\)\.slice\(0, 16\)/);
-    assert.match(rowSource, /const enemyAnchors = enemyProfileAnchors\(view\)\.slice\(0, 8\)/);
-    assert.match(rowSource, /if \(checkedBoards\.has\(board\)\) continue; checkedBoards\.add\(board\)/);
+    assert.match(rowSource, /return rankedWarRosterCluster\(view\?\.enemyRoster, rankedWarRowForAnchor\)/);
+    assert.match(rowSource, /if \(candidate === document\.body \|\| candidate === document\.documentElement\) break/);
+    assert.match(rowSource, /if \(candidate === mainScope\) break/);
+    assert.match(rowSource, /if \(!hasRankedWarRosterSignature\(root\)\) continue/);
+    assert.match(rowSource, /profileIds\.size > profileIdLimit/);
+    assert.match(rowSource, /profileLinks\.length > profileLinkLimit/);
+    assert.doesNotMatch(rowSource, /lowestCommonAncestor\(ownRow, enemyRow\)|requiredOwnMatches|requiredEnemyMatches/);
     assert.match(rowSource, /function markRankedWarBoard\(board\)/);
     assert.match(rowSource, /board && markedBoards\.length === 1 && markedBoards\[0\] === board/);
     assert.match(rowSource, /board\.dataset\.warbuddyRosterBoard = "1"/);
@@ -1576,20 +2006,18 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(rowSource, /function rankedWarMountPoint\(board, wrapper = null\)/);
     assert.match(rowSource, /if \(!board\?\.parentElement \|\| board\.isConnected === false\) return null/);
     assert.match(rowSource, /return rankedWarSafeMountPoint\(board\.parentElement, board, wrapper\)/);
-    assert.doesNotMatch(rowSource, /#mainContainer|mainContainer\.firstChild/);
+    assert.doesNotMatch(rowSource, /mainContainer\.firstChild/);
     assert.match(rowSource, /function createRankedWarHost\(view, board = rankedWarBoardForView\(view\)\) \{ if \(!board\?\.parentElement \|\| board\.isConnected === false\) return null/);
     assert.match(rowSource, /wrapper\.dataset\.warbuddyBoardVerified = "1"/);
     assert.match(rowSource, /const mountPoint = rankedWarMountPoint\(board\)/);
     assert.match(rowSource, /mountPoint\.parent\.insertBefore\(wrapper, mountPoint\.before\)/);
     assert.doesNotMatch(rowSource, /\.insertBefore\(wrapper, (?:board|row)\b/);
 
-    assert.match(mountSource, /const board = rankedWarBoardForView\(view\); if \(!host && board\?\.parentElement && board\.isConnected !== false\) \{ host = createRankedWarHost\(view, board\)/);
-    assert.match(mountSource, /const wrapper = document\.getElementById\(INTEGRATED_WRAPPER_ID\); if \(board\?\.parentElement && board\.isConnected !== false\) \{ markRankedWarBoard\(board\)/);
-    assert.match(mountSource, /if \(wrapper\) wrapper\.dataset\.warbuddyBoardVerified = "1"/);
-    assert.match(mountSource, /const mountPoint = rankedWarMountPoint\(board, wrapper\)/);
-    assert.match(mountSource, /wrapper\.parentNode !== mountPoint\.parent \|\| wrapper\.nextSibling !== mountPoint\.before/);
-    assert.match(mountSource, /mountPoint\.parent\.insertBefore\(wrapper, mountPoint\.before\)/);
-    assert.doesNotMatch(mountSource, /markRankedWarBoard\(null\)|boardVerified = board \?/);
+    assert.match(inlineSource, /const signedBoard = rankedWarBoardForView\(view\)/);
+    assert.match(inlineSource, /const verifiedBoard = board \|\| rankedWarUnsignedRosterCluster\(view\.enemyRoster\)/);
+    assert.match(inlineSource, /const enemyEntries = rankedWarEnemyRowEntries\(view\.enemyRoster, verifiedBoard\)/);
+    assert.match(inlineSource, /if \(!enemyEntries\.length\) \{ if \(state\.integratedDecorationsActive\) removeInlineMemberTools\(\); return; \}/);
+    assert.doesNotMatch(mountSource, /rankedWarBoardForView|createRankedWarHost|INTEGRATED_WRAPPER_ID|placement: "inline"/);
 
     assert.match(wrapperRoot, /display:block; box-sizing:border-box; width:100%; min-width:0; max-width:100%/);
     assert.doesNotMatch(wrapperRoot, /grid-column|flex:/);
@@ -1658,106 +2086,69 @@ describe("Warbuddy userscript source contracts", () => {
     assert.equal(boardIsMain.before, mainContainer);
   });
 
-  it("never relocates an existing ranked-war strip through a transient fallback", async () => {
+  it("never returns a full-panel mount in native mode and keeps floating mode optional", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const resolveSource = sourceSection(source, "function resolvePanelMount", "function setDisplayMode");
-    const runResolve = ({ host = null, createdHost = null, board = null, wrapper = null, mountPoint = null, rosterMode = true } = {}) => {
-      const events = { creates: 0, inserts: 0, marks: 0, removals: 0, boardChecks: 0 };
+    const modeSource = sourceSection(source, "function setDisplayMode", "async function getProfileWithKey");
+    const runResolve = (displayMode) => {
+      const panel = { removals: 0, remove() { this.removals += 1; } };
+      const body = {};
+      const cleanupCalls = [];
       const context = {
         result: null,
-        events,
-        state: { displayMode: "native" },
-        window: { location: { href: "https://www.torn.com/factions.php#/war/rank" } },
-        isRosterModePage() { return rosterMode; },
+        state: { displayMode },
         PANEL_ID: "warbuddy-panel",
-        INTEGRATED_HOST_ID: "warbuddy-integrated-host",
-        INTEGRATED_WRAPPER_ID: "warbuddy-integrated-wrapper",
         document: {
-          body: {},
-          getElementById(id) {
-            if (id === "warbuddy-integrated-host") return host;
-            if (id === "warbuddy-integrated-wrapper") return wrapper;
-            return null;
-          },
+          body,
+          getElementById(id) { return id === "warbuddy-panel" ? panel : null; },
         },
-        removeIntegratedMount() { events.removals += 1; },
-        createRankedWarHost() {
-          events.creates += 1;
-          return createdHost;
-        },
-        rankedWarBoardForView() { events.boardChecks += 1; return board; },
-        markRankedWarBoard() { events.marks += 1; },
-        rankedWarMountPoint() { return mountPoint; },
+        removeIntegratedMount(preservePanel) { cleanupCalls.push(preservePanel); },
       };
-      if (mountPoint?.parent) {
-        mountPoint.parent.insertBefore = () => { events.inserts += 1; };
-      }
       runInNewContext(`${resolveSource}\nresult = resolvePanelMount({});`, context);
-      return { result: context.result, events };
+      return { result: context.result, panel, body, cleanupCalls };
     };
 
-    const absent = runResolve();
-    assert.equal(absent.result.mount, null);
-    assert.equal(absent.events.creates, 0);
-    assert.equal(absent.events.inserts, 0);
+    const native = runResolve("native");
+    assert.equal(native.result.mount, null);
+    assert.equal(native.result.placement, "none");
+    assert.equal(native.panel.removals, 1);
+    assert.deepEqual(native.cleanupCalls, [false]);
 
-    const foreign = runResolve({
-      host: { dataset: { placement: "rank" } },
-      wrapper: {},
-      rosterMode: false,
-    });
-    assert.equal(foreign.result.mount, null);
-    assert.equal(foreign.events.boardChecks, 0);
-    assert.equal(foreign.events.creates, 0);
-    assert.equal(foreign.events.inserts, 0);
-    assert.equal(foreign.events.removals, 1);
+    const floating = runResolve("floating");
+    assert.equal(floating.result.mount, floating.body);
+    assert.equal(floating.result.placement, "floating");
+    assert.equal(floating.panel.removals, 0);
+    assert.deepEqual(floating.cleanupCalls, [true]);
+    assert.doesNotMatch(resolveSource, /rankedWarBoardForView|createRankedWarHost|placement:\s*["']inline/);
 
-    const initialParent = {};
-    const initialBefore = {};
-    const initialHost = { dataset: { placement: "rank" } };
-    const initialWrapper = {
-      dataset: {},
-      parentNode: initialParent,
-      nextSibling: initialBefore,
+    const runModeChange = (value) => {
+      const panel = { removals: 0, remove() { this.removals += 1; } };
+      const cleanupCalls = [];
+      const context = {
+        value,
+        state: { displayMode: "floating" },
+        core: { normalizeDisplayMode: core.normalizeDisplayMode },
+        DISPLAY_MODE_STORAGE: "warbuddy_display_mode",
+        PANEL_ID: "warbuddy-panel",
+        document: { getElementById() { return panel; } },
+        storage: { set(key, next) { context.stored = [key, next]; } },
+        removeIntegratedMount(preservePanel) { cleanupCalls.push(preservePanel); },
+        scheduleRender() { context.renderScheduled = true; },
+        syncForegroundState() { context.foregroundSynced = true; },
+      };
+      runInNewContext(`${modeSource}\nsetDisplayMode(value);`, context);
+      return { context, panel, cleanupCalls };
     };
-    const initial = runResolve({
-      createdHost: initialHost,
-      board: { parentElement: {}, isConnected: true },
-      wrapper: initialWrapper,
-      mountPoint: { parent: initialParent, before: initialBefore },
-    });
-    assert.equal(initial.result.placement, "inline");
-    assert.equal(initial.events.creates, 1);
-    assert.equal(initial.events.inserts, 0);
-    assert.equal(initial.events.marks, 1);
 
-    const stableParent = {};
-    const stableBefore = {};
-    const stableWrapper = {
-      dataset: {},
-      parentNode: stableParent,
-      nextSibling: stableBefore,
-    };
-    const transient = runResolve({
-      host: { dataset: { placement: "rank" } },
-      board: null,
-      wrapper: stableWrapper,
-    });
-    assert.equal(transient.result.placement, "inline");
-    assert.equal(transient.events.inserts, 0);
-    assert.equal(transient.events.marks, 0);
+    const nativeChange = runModeChange("native");
+    assert.equal(nativeChange.panel.removals, 1);
+    assert.deepEqual(nativeChange.cleanupCalls, [false]);
+    assert.deepEqual(nativeChange.context.stored, ["warbuddy_display_mode", "native"]);
+    assert.equal(nativeChange.context.renderScheduled, true);
 
-    const replacementParent = {};
-    const replacementBefore = {};
-    const replacement = runResolve({
-      host: { dataset: { placement: "rank" } },
-      board: { parentElement: {}, isConnected: true },
-      wrapper: stableWrapper,
-      mountPoint: { parent: replacementParent, before: replacementBefore },
-    });
-    assert.equal(replacement.result.placement, "inline");
-    assert.equal(replacement.events.inserts, 1);
-    assert.equal(replacement.events.marks, 1);
+    const floatingChange = runModeChange("floating");
+    assert.equal(floatingChange.panel.removals, 0);
+    assert.deepEqual(floatingChange.cleanupCalls, [true]);
   });
 
   it("revalidates native ranked-war placement when the responsive layout changes", async () => {
@@ -1770,9 +2161,12 @@ describe("Warbuddy userscript source contracts", () => {
 
     assert.match(listenerSource, /const handleViewportResize = \(\) => \{/);
     assert.match(listenerSource, /positionOpenDibsTip\(document\)/);
-    assert.match(listenerSource, /state\.displayMode !== "floating" && isRosterModePage\(\)\) scheduleRender\(\)/);
+    assert.match(listenerSource, /scheduleNativeOverlayPosition\(\)/);
+    assert.match(listenerSource, /targetPageMemberId\(\) \|\| \(state\.displayMode !== "floating" && isRosterModePage\(\)\)\) scheduleRender\(\)/);
     assert.match(listenerSource, /window\.addEventListener\("resize", handleViewportResize\)/);
     assert.match(listenerSource, /window\.visualViewport\?\.addEventListener\?\.\("resize", handleViewportResize\)/);
+    assert.match(listenerSource, /window\.addEventListener\("scroll", scheduleNativeOverlayPosition, \{ passive: true \}\)/);
+    assert.match(listenerSource, /window\.visualViewport\?\.addEventListener\?\.\("scroll", scheduleNativeOverlayPosition, \{ passive: true \}\)/);
   });
 
   it("keeps roster filtering reversible while showing independent Retal and Dibs actions", async () => {
@@ -1783,31 +2177,34 @@ describe("Warbuddy userscript source contracts", () => {
     const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
 
     assert.match(inlineSource, /if \(!canFindBoard\) \{ if \(state\.integratedDecorationsActive\) removeInlineMemberTools\(\); return/);
-    assert.match(inlineSource, /const board = rankedWarBoardForView\(view\); if \(!board \|\| board\.isConnected === false\) return/);
-    assert.match(inlineSource, /rosterProfileAnchors\(view\.enemyRoster, board\)/);
+    assert.match(inlineSource, /const verifiedBoard = board \|\| rankedWarUnsignedRosterCluster\(view\.enemyRoster\)/);
+    assert.match(inlineSource, /rankedWarEnemyRowEntries\(view\.enemyRoster, verifiedBoard\)/);
     assert.doesNotMatch(inlineSource, /: enemyProfileAnchors\(view\)|\[data-warbuddy-roster-board='1'\]/);
-    assert.match(inlineSource, /const row = rankedWarRowForAnchor\(anchor\)/);
+    assert.match(inlineSource, /for \(const \{ anchor, memberId, row \} of enemyEntries\)/);
     assert.match(inlineSource, /const attackLink = rankedWarAttackLinkForMember\(row, memberId\)/);
     assert.doesNotMatch(inlineSource, /board\?\.contains\?\.\(anchor\)|rankedWarOwnRowForAnchor\(anchor\)/);
     assert.match(inlineSource, /core\.rosterFilterMatches\(state\.rosterFilter, flags\)/);
     assert.match(inlineSource, /core\.memberAvailability\(member, state\.nowMs\)/);
     assert.match(inlineSource, /syncIntegratedStatusCell\(row, attackLink, memberId, availability, keepStatusCells\)/);
     assert.doesNotMatch(inlineSource, /availabilityMarkup/);
-    assert.match(inlineSource, /tools\.classList\.toggle\("quiet", !watched && !retaliation && !claim\)/);
+    assert.match(inlineSource, /tools\.classList\.toggle\("quiet", !state\.rosterDibsButtons && !watched && !retaliation && !claim\)/);
     assert.match(inlineSource, /rosterActions\.className = ROSTER_ACTIONS_CLASS/);
     assert.match(inlineSource, /actionParent\.insertBefore\(rosterActions, attackLink\)/);
-    assert.match(inlineSource, /const rosterDibsState = claim/);
-    assert.match(inlineSource, /const rosterRetalState = retaliation/);
-    assert.match(inlineSource, /wc-native-state wc-native-dibs/);
-    assert.match(inlineSource, /wc-native-state wc-native-retal/);
-    assert.match(inlineSource, /dibsMarkup\(member, view, claim, `roster-\$\{memberId\}`\)/);
-    assert.match(inlineSource, /const fallbackDibsControl = !attackLink \? dibsMarkup\(member, view, claim, `roster-fallback-\$\{memberId\}`\) : ""/);
+    assert.match(inlineSource, /actionParent\.classList\.add\("warbuddy-roster-action-cell"\)/);
+    assert.match(inlineSource, /attackLink\.classList\.toggle\("warbuddy-attack-has-dibs", state\.rosterDibsButtons\)/);
+    assert.match(source, /const ROSTER_DIBS_STORAGE = "warbuddy_roster_dibs_buttons"/);
+    assert.match(source, /rosterDibsButtons: String\(storage\.get\(ROSTER_DIBS_STORAGE, "1"\)\) !== "0"/);
+    assert.match(inlineSource, /const rosterDibsControl = state\.rosterDibsButtons \? dibsMarkup\(member, view, claim, `roster-\$\{memberId\}`\) : ""/);
+    assert.match(inlineSource, /const fallbackDibsControl = !attackLink && state\.rosterDibsButtons \? dibsMarkup\(member, view, claim, `roster-fallback-\$\{memberId\}`\) : ""/);
+    assert.match(source, /id="\$\{INTEGRATED_HOST_ID\}" class="wc-native-roster-panel-host"/);
+    assert.match(source, /data-field="roster-dibs-buttons"/);
+    assert.match(source, /panel\.querySelector\('\[data-field="roster-dibs-buttons"\]'\)/);
     assert.match(source, /function handleInlineToolAction\(event\) \{\s*if \(handleDibsControlAction\(event\)\) return/);
     assert.match(inlineSource, /warbuddy-attack-dibs-mine/);
     assert.match(inlineSource, /warbuddy-attack-dibs-taken/);
     assert.match(inlineSource, /core\.rosterOrder\(flags, member, state\.nowMs\)/);
     assert.match(inlineSource, /ffscouterFilterActive\(\)/);
-    assert.match(inlineSource, /tornRosterSortState\(decoratedRows, board\)/);
+    assert.match(inlineSource, /tornRosterSortState\(decoratedRows, verifiedBoard\)/);
     assert.match(inlineSource, /core\.rosterPriorityAllowedForSort\(tornSort\.column\)/);
     assert.match(inlineSource, /state\.rosterPrioritySort && !externalSortReason/);
     assert.match(inlineSource, /if \(row\.style\.order !== order\) row\.style\.order = order/);
@@ -1821,8 +2218,10 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(mountCleanupSource, /delete board\.dataset\.warbuddyRosterBoard/);
     assert.match(source, /function rankedWarStatusCell\(row, attackLink\)/);
     assert.match(source, /classList\.remove\(STATUS_CELL_CLASS\)/);
-    assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\} \{ display:inline-flex; min-width:0; max-width:min\(190px,45vw\); flex-wrap:nowrap;[\s\S]*?overflow:hidden/);
-    assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\} \.wc-native-state \{ min-width:0; max-width:86px; flex:0 1 auto; overflow:hidden; text-overflow:ellipsis/);
+    assert.match(styleSource, /\.warbuddy-roster-action-cell \{ position:relative !important/);
+    assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\} \{ position:absolute; left:2px; top:50%;[\s\S]*?overflow:visible/);
+    assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\}:empty \{ display:none/);
+    assert.match(styleSource, /a\.warbuddy-attack-has-dibs \{ box-sizing:border-box !important; padding-left:24px !important/);
   });
 
   it("reconciles Torn status, reuses native colors, and avoids unchanged roster rewrites", async () => {
@@ -1832,6 +2231,7 @@ describe("Warbuddy userscript source contracts", () => {
       "function tornStatusCategory",
       "function syncIntegratedMemberTools"
     ));
+    const ensureSource = compactSource(sourceSection(source, "function ensureInlineMemberTools", "function syncIntegratedMemberTools"));
     const inlineSource = compactSource(sourceSection(source, "function syncIntegratedMemberTools", "function dibsMarkup"));
     const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
     const clockSource = compactSource(sourceSection(source, "function tornPageNowMs", "function removeInlineMemberTools"));
@@ -1841,13 +2241,13 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(statusSource, /clearIntegratedStatusCell\(statusCell, false\)/);
     assert.match(statusSource, /warbuddyStatusMismatch/);
     assert.match(inlineSource, /inlineMarkupCache\.get\(tools\) !== toolsMarkup/);
-    assert.match(inlineSource, /tools\.addEventListener\("click", handleInlineToolAction\)/);
+    assert.match(ensureSource, /tools\.addEventListener\("click", handleInlineToolAction\)/);
     assert.doesNotMatch(inlineSource, /querySelector\?\.\('\[data-inline-action="watch"\]'\)\?\.addEventListener/);
     assert.match(styleSource, /var\(--user-status-blue-color,#22d3ee\)/);
     assert.match(styleSource, /var\(--user-status-red-color,#f87171\)/);
     assert.match(clockSource, /pageWindow\.getCurrentTimestamp\(\)/);
-    assert.match(clockSource, /core\.trustedClockOffset\(value, Date\.now\(\)\)/);
-    assert.match(source, /syncTrustedClock\(snapshot\?\.generatedAt, "snapshot"\)/);
+    assert.match(clockSource, /core\.trustedClockOffset\(serverSampleMs, sampledAt, Number\.POSITIVE_INFINITY\)/);
+    assert.match(source, /syncTrustedClock\(snapshot\?\.serverTime \|\| snapshot\?\.generatedAt, "snapshot"\)/);
     assert.match(source, /state\.nowMs = trustedNowMs\(\)/);
   });
 
@@ -1871,42 +2271,22 @@ describe("Warbuddy userscript source contracts", () => {
     assert.equal(core.dibsFeatureEnabled({ enabled: true, dibsEnabled: true, showActionQueue: false }), true);
   });
 
-  it("uses one compact native target context on profile and attack pages", async () => {
+  it("uses a body-mounted profile overlay and an inline ranked-war accordion", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const activationSource = compactSource(sourceSection(
       source,
       "function syncPageActivation",
       "function syncVisibilityState"
     ));
-    const contextSource = compactSource(sourceSection(
-      source,
-      "function targetContextMountPoint",
-      "function handleTargetContextAction"
-    ));
-    const attackMountSource = compactSource(sourceSection(
-      source,
-      "function attackTargetLabelsContainer",
-      "function targetContextMountPoint"
-    ));
-    const profileMountSource = compactSource(sourceSection(
-      source,
-      "function profileTargetContainer",
-      "function targetContextMountPoint"
-    ));
     const relevanceSource = compactSource(sourceSection(
       source,
       "function targetPageFactionEligible",
       "function attackTargetLabelsContainer"
     ));
-    const compactMarkupSource = compactSource(sourceSection(
+    const anchorSource = compactSource(sourceSection(
       source,
-      "if (state.attackTargetId || state.profileTargetId)",
-      "function handleTargetContextAction"
-    ));
-    const actionSource = compactSource(sourceSection(
-      source,
-      "function handleTargetContextAction",
-      "function syncTargetPageContext"
+      "function nativeAnchorRect",
+      "function targetContextMarkup"
     ));
     const syncContextSource = compactSource(sourceSection(
       source,
@@ -1914,133 +2294,140 @@ describe("Warbuddy userscript source contracts", () => {
       "function capturePanelFocus"
     ));
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
+    const styleSource = compactSource(sourceSection(source, "addStyle(`", "const normalizeResponse"));
 
     assert.match(activationSource, /const nextAttackTargetId = active \? core\.attackPageTargetId\(href\) : 0/);
     assert.match(activationSource, /const nextProfileTargetId = active \? core\.profilePageTargetId\(href\) : 0/);
-    assert.match(attackMountSource, /\[class\*='labelsContainer'\]/);
-    assert.match(attackMountSource, /core\.profileMemberIdFromUrl/);
-    assert.match(attackMountSource, /candidate\.closest\?\.\("\[class\*='defender'\]"\)/);
-    assert.match(attackMountSource, /const matchedDefender = defenderCandidates\.find\(\(\{ defender \}\) => matchesTargetProfile\(defender\)\)/);
-    assert.match(attackMountSource, /if \(defenderCandidates\.length === 1\) return defenderCandidates\[0\]\.candidate/);
-    assert.match(attackMountSource, /return locallyMatched\.length === 1 \? locallyMatched\[0\] : null/);
-    assert.match(contextSource, /if \(state\.attackTargetId\) \{ const attackMount = attackTargetLabelsContainer\(\); if \(!attackMount\) return null; return \{ parent: attackMount, before: null, placement: "attack" \}/);
     assert.match(relevanceSource, /registeredFactionId === ownFactionId/);
     assert.match(relevanceSource, /state\.session\?\.access === "war_companion"/);
-    assert.match(relevanceSource, /state\.settings\?\.enabled === true/);
+    assert.match(relevanceSource, /state\.settings\?\.enabled !== false/);
     assert.match(relevanceSource, /!!view\?\.alliedScore\?\.start/);
-    assert.match(relevanceSource, /enemyFactionId !== ownFactionId/);
-    assert.match(relevanceSource, /!memberId \|\| !targetPageFactionEligible\(view\)/);
-    assert.match(relevanceSource, /if \(state\.attackTargetId\) return true/);
-    assert.match(relevanceSource, /savedTargetIds\(\)\.includes\(memberId\)/);
-    assert.match(relevanceSource, /view\?\.enemyRoster/);
-    assert.match(relevanceSource, /view\?\.retaliation/);
-    assert.match(relevanceSource, /memberLoadout\(view, memberId\)/);
-    assert.match(relevanceSource, /core\.activeDibsClaim\(view\?\.dibs, memberId, state\.nowMs\)/);
-    assert.match(profileMountSource, /document\.getElementById\?\.\(TARGET_CONTEXT_ID\)/);
-    assert.match(profileMountSource, /existing\?\.classList\?\.contains\?\.\("wc-profile-context"\)/);
-    assert.match(profileMountSource, /Number\(existing\.dataset\?\.memberId \|\| 0\) === targetId/);
-    assert.match(profileMountSource, /existing\.parentElement\.matches\?\.\("\.profile-container"\)/);
-    assert.match(profileMountSource, /document\.querySelectorAll\?\.\("\.profile-container"\)/);
-    assert.match(profileMountSource, /querySelectorAll\?\.\("a\[href\*='sid=attack'\]"\)/);
-    assert.match(profileMountSource, /core\.attackPageTargetId\(control\.getAttribute\?\.\("href"\) \|\| control\.href \|\| ""\) === targetId/);
-    assert.match(profileMountSource, /return candidates\.length === 1 \? candidates\[0\] : null/);
-    assert.doesNotMatch(profileMountSource, /profileWrapper|mainContainer|\[class\*='profile-container'\]|nativeControls/);
-    assert.match(contextSource, /if \(!state\.profileTargetId\) return null; const profileMount = profileTargetContainer\(\); if \(!profileMount\) return null/);
-    assert.match(contextSource, /return \{ parent: profileMount, before: null, placement: "profile" \}/);
-    assert.match(contextSource, /const memberId = targetPageMemberId\(\)/);
-    assert.match(compactMarkupSource, /const surface = state\.attackTargetId \? "attack" : "profile"/);
-    assert.match(compactMarkupSource, /wc-native-state wc-native-dibs/);
-    assert.match(compactMarkupSource, /wc-native-state wc-native-retal/);
-    assert.match(compactMarkupSource, /dibsMarkup\(targetRecord, view, claim, `\$\{surface\}-\$\{memberId\}`\)/);
-    assert.match(compactMarkupSource, /state\.profileTargetId && savedKey \? loadoutMarkup\(view, memberId\) : ""/);
-    assert.match(compactMarkupSource, /const compactWatchControl = savedKey && \(enemyMember \|\| watched\)/);
-    assert.match(compactMarkupSource, /data-action="toggle-watch"/);
-    assert.match(compactMarkupSource, /data-target-member="\$\{memberId\}"/);
-    assert.match(compactMarkupSource, /data-action="set-display-mode"/);
-    assert.match(compactMarkupSource, /data-display-mode="\$\{floating \? "native" : "floating"\}"/);
-    assert.match(compactMarkupSource, /wc-native-brand wc-attack-brand/);
-    assert.doesNotMatch(compactMarkupSource, /wc-native-target|wc-native-details|wc-native-key|War roster|showKeyEditor|Connect Warbuddy/);
-    assert.match(actionSource, /event\.currentTarget\?\.classList\?\.contains\("wc-compact-context"\)\) event\.stopPropagation\(\)/);
-    assert.match(syncContextSource, /context\.id = TARGET_CONTEXT_ID/);
-    assert.match(syncContextSource, /!state\.active \|\| !memberId \|\| !targetPageContextRelevant\(view\)/);
-    assert.match(syncContextSource, /context\.addEventListener\("click", handleTargetContextAction\)/);
-    assert.match(syncContextSource, /context\.addEventListener\("pointerdown", \(event\) => \{ if \(event\.currentTarget\?\.classList\?\.contains\("wc-compact-context"\)\) event\.stopPropagation\(\)/);
-    assert.match(syncContextSource, /const expectedTagName = mountPoint\.placement === "attack" \? "SPAN" : "DIV"/);
-    assert.match(syncContextSource, /document\.createElement\(expectedTagName\.toLowerCase\(\)\)/);
-    assert.match(syncContextSource, /warbuddy-target-context wc-compact-context wc-\$\{mountPoint\.placement\}-context/);
-    assert.match(syncContextSource, /const profileHost = mountPoint\.placement === "profile" \? mountPoint\.parent : null/);
-    assert.match(syncContextSource, /hostPosition === "static"\) profileHost\.classList\?\.add\?\.\(PROFILE_HOST_CLASS\)/);
-    assert.match(syncContextSource, /mountPoint\.parent\.insertBefore\(context, mountPoint\.before \|\| null\)/);
-    assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
-    assert.match(renderSource, /if \(targetPage && !targetPageFactionEligible\(view\)\) \{ document\.getElementById\(PANEL_ID\)\?\.remove\(\); removeTargetContext\(\); removeInlineMemberTools\(\); removeIntegratedMount\(false\); stopAttackOutcomeDetection\(\); return; \}/);
-    assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\); else removeTargetContext\(\)/);
-    assert.match(renderSource, /if \(state\.displayMode !== "floating" && targetPage\)/);
+    assert.match(relevanceSource, /if \(state\.attackTargetId\) return true; return !!state\.profileTargetId/);
+    assert.match(anchorSource, /function profileNameAnchor\(\)/);
+    assert.match(anchorSource, /const idToken = `\[\$\{memberId\}\]`/);
+    assert.match(anchorSource, /text\.includes\(idToken\)/);
+    assert.match(anchorSource, /function rankedWarFilterAnchor\(\)/);
+    assert.match(anchorSource, /\^ranked\\s\+war\\s\+filter/);
+    assert.match(anchorSource, /function rankedWarFilterBar\(anchor = rankedWarFilterAnchor\(\)\)/);
+    assert.match(anchorSource, /function rankedWarRosterContextMountPoint\(\)/);
+    assert.match(anchorSource, /return \{ parent, before, anchor: bar \}/);
+    assert.match(anchorSource, /function positionNativeOverlay\(context, anchor, placement\)/);
+    assert.match(anchorSource, /wc-native-overlay-fallback/);
+    assert.match(anchorSource, /context\.style\.setProperty\(property, value, "important"\)/);
+    assert.match(anchorSource, /parent: document\.body/);
+    assert.match(anchorSource, /anchor: profileNameAnchor\(\)/);
+    assert.match(anchorSource, /overlay: true/);
+    assert.doesNotMatch(syncContextSource, /PROFILE_HOST_CLASS|profileHost/);
+    assert.match(syncContextSource, /if \(mountPoint\.overlay\) positionNativeOverlay\(context, mountPoint\.anchor, mountPoint\.placement\)/);
+    assert.match(syncContextSource, /function syncNativeRosterContext\(view = sessionView\(\)\)/);
+    assert.match(syncContextSource, /const mountPoint = rankedWarRosterContextMountPoint\(\)/);
+    assert.match(syncContextSource, /context = document\.createElement\("details"\)/);
+    assert.match(syncContextSource, /mountPoint\.parent\.insertBefore\(context, mountPoint\.before\)/);
+    assert.match(syncContextSource, /state\.rosterControlsOpen = event\.currentTarget\.open === true/);
+    assert.doesNotMatch(syncContextSource, /positionNativeOverlay\(context, anchor/);
+    assert.match(renderSource, /syncNativeRosterContext\(view\)/);
+    assert.match(renderSource, /removeNativeRosterContext\(\)/);
+    assert.match(styleSource, /body > #\$\{TARGET_CONTEXT_ID\}\.wc-profile-context \{ position:fixed !important/);
+    assert.match(styleSource, /#\$\{ROSTER_CONTEXT_ID\}\.wc-native-roster-context \{ position:relative !important/);
+    assert.match(styleSource, /#\$\{ROSTER_CONTEXT_ID\} > summary \{ display:flex/);
     assert.doesNotMatch(source, /function attackTargetMarkup|Current Torn target/);
   });
 
-  it("mounts profiles only in one target-specific stable Actions container", async () => {
+  it("anchors the profile overlay beside the exact player name and the roster marker to the filter heading", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
-    const mountSource = sourceSection(source, "function profileTargetContainer", "function targetContextMarkup");
-    const attackControl = (memberId) => ({
-      href: `https://www.torn.com/page.php?sid=attack&user2ID=${memberId}`,
-      getAttribute() { return this.href; },
+    const mountSource = sourceSection(source, "function nativeAnchorRect", "function targetContextMarkup");
+    const node = ({ text, tagName = "DIV", rect }) => ({
+      textContent: text,
+      tagName,
+      isConnected: true,
+      closest() { return null; },
+      getBoundingClientRect() { return rect; },
     });
-    const container = (controls = [], isConnected = true) => ({
-      isConnected,
-      querySelectorAll() {
-        return controls;
+    const decoy = node({
+      text: "Other player [99]",
+      tagName: "H1",
+      rect: { left: 60, right: 260, top: 20, bottom: 52, width: 200, height: 32 },
+    });
+    const exact = node({
+      text: "Bhonkai [42]",
+      tagName: "H1",
+      rect: { left: 70, right: 220, top: 40, bottom: 70, width: 150, height: 30 },
+    });
+    const outerFilter = node({
+      text: "Ranked War Filter",
+      rect: { left: 600, right: 1000, top: 500, bottom: 540, width: 400, height: 40 },
+    });
+    const exactFilter = node({
+      text: "Ranked War Filter",
+      tagName: "H3",
+      rect: { left: 620, right: 980, top: 505, bottom: 530, width: 360, height: 25 },
+    });
+    const body = { children: [] };
+    const main = {
+      querySelectorAll() { return [outerFilter, exactFilter]; },
+    };
+    const overlay = {
+      offsetWidth: 120,
+      offsetHeight: 18,
+      style: {
+        removeProperty(name) { delete this[name]; },
+        setProperty(name, value, priority) {
+          this[name] = value;
+          this[`${name}Priority`] = priority;
+        },
       },
-    });
-    const resolveMount = ({ candidates = [], existing = null } = {}) => {
-      const context = {
-        result: null,
-        TARGET_CONTEXT_ID: "warbuddy-target-context",
-        state: { attackTargetId: 0, profileTargetId: 42 },
-        core: {
-          attackPageTargetId(value) {
-            return Number(new URL(value, "https://www.torn.com/").searchParams.get("user2ID") || 0);
-          },
+      classList: {
+        fallback: false,
+        toggle(name, enabled) {
+          if (name === "wc-native-overlay-fallback") this.fallback = enabled;
         },
-        document: {
-          getElementById() {
-            return existing;
-          },
-          querySelectorAll(selector) {
-            return selector === ".profile-container" ? candidates : [];
-          },
-        },
-      };
-      runInNewContext(`${mountSource}\nresult = targetContextMountPoint();`, context);
-      return context.result;
+      },
+      getBoundingClientRect() {
+        return { left: 0, right: 120, top: 0, bottom: 18, width: 120, height: 18 };
+      },
     };
-
-    const exact = container([attackControl(42)]);
-    const mounted = resolveMount({ candidates: [exact] });
-    assert.equal(mounted.parent, exact);
-    assert.equal(mounted.before, null);
-    assert.equal(mounted.placement, "profile");
-    assert.equal(resolveMount({ candidates: [container([])] }), null);
-    assert.equal(resolveMount({ candidates: [container([attackControl(41)])] }), null);
-    assert.equal(resolveMount({ candidates: [container([attackControl(42)], false)] }), null);
-    assert.equal(resolveMount({ candidates: [container([attackControl(42)]), container([attackControl(42)])] }), null);
-
-    const establishedParent = container([]);
-    establishedParent.matches = (selector) => selector === ".profile-container";
-    const existingContext = {
-      dataset: { memberId: "42" },
-      parentElement: establishedParent,
-      classList: { contains(value) { return value === "wc-profile-context"; } },
+    const context = {
+      result: null,
+      state: { attackTargetId: 0, profileTargetId: 42 },
+      TARGET_CONTEXT_ID: "warbuddy-target-context",
+      ROSTER_CONTEXT_ID: "warbuddy-roster-context",
+      PANEL_ID: "warbuddy-panel",
+      document: {
+        body,
+        documentElement: { clientWidth: 1200, clientHeight: 800 },
+        querySelectorAll() { return [decoy, exact]; },
+        querySelector() { return null; },
+      },
+      window: {
+        scrollX: 0,
+        scrollY: 0,
+        innerWidth: 1200,
+        innerHeight: 800,
+        visualViewport: null,
+      },
+      rankedWarMainContent() { return main; },
+      overlay,
     };
-    assert.equal(resolveMount({ existing: existingContext }).parent, establishedParent);
-    assert.equal(resolveMount({ existing: { ...existingContext, dataset: { memberId: "41" } } }), null);
-    assert.equal(resolveMount({ existing: {
-      ...existingContext,
-      parentElement: { ...establishedParent, matches() { return false; } },
-    } }), null);
-    assert.doesNotMatch(mountSource, /profileWrapper|mainContainer|\[class\*='profile-container'\]|nativeControls/);
+    runInNewContext(
+      `${mountSource}\nconst mount = targetContextMountPoint(); const positioned = positionNativeOverlay(overlay, mount.anchor, mount.placement); result = { mount, positioned, filter: rankedWarFilterAnchor() };`,
+      context
+    );
+
+    assert.equal(context.result.mount.parent, body);
+    assert.equal(context.result.mount.anchor, exact);
+    assert.equal(context.result.mount.placement, "profile");
+    assert.equal(context.result.mount.overlay, true);
+    assert.equal(context.result.positioned, true);
+    assert.equal(overlay.classList.fallback, false);
+    assert.equal(overlay.style.left, "228px");
+    assert.equal(overlay.style.top, "46px");
+    assert.equal(overlay.style.leftPriority, "important");
+    assert.equal(overlay.style.topPriority, "important");
+    assert.equal(context.result.filter, exactFilter);
+    assert.deepEqual(body.children, []);
   });
 
-  it("leaves unrelated player profiles untouched while preserving actionable contexts", async () => {
+  it("shows profile context throughout an eligible registered war and stays closed otherwise", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const relevanceSource = sourceSection(
       source,
@@ -2099,7 +2486,7 @@ describe("Warbuddy userscript source contracts", () => {
       return context.result;
     };
 
-    assert.equal(isRelevant(), false);
+    assert.equal(isRelevant(), true);
     assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0 }), true);
     assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, registeredFactionId: "" }), false);
     assert.equal(isRelevant({ attackTargetId: 42, profileTargetId: 0, token: "" }), false);
@@ -2313,6 +2700,7 @@ describe("Warbuddy userscript source contracts", () => {
     const compactRoot = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-compact-context \{([^}]*)\}/)?.[1]);
     const attackRoot = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-attack-context \{([^}]*)\}/)?.[1]);
     const profileRoot = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-profile-context \{([^}]*)\}/)?.[1]);
+    const rosterRoot = compactSource(styleSource.match(/#\$\{ROSTER_CONTEXT_ID\}\.wc-native-roster-context \{([^}]*)\}/)?.[1]);
     const compactStates = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-compact-context \.wc-native-states \{([^}]*)\}/)?.[1]);
     const compactActions = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-compact-context \.wc-native-actions \{([^}]*)\}/)?.[1]);
     const compactState = compactSource(styleSource.match(/#\$\{TARGET_CONTEXT_ID\}\.wc-compact-context \.wc-native-state \{([^}]*)\}/)?.[1]);
@@ -2328,19 +2716,36 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(attackRoot, /flex:0 1 auto/);
     assert.match(attackRoot, /overflow:hidden/);
     assert.doesNotMatch(attackRoot, /(?:^|;\s*)width:100%|flex:1 0 100%|position:(?:fixed|absolute)/);
-    assert.match(profileRoot, /position:absolute !important; inset:auto 6px 6px auto !important; z-index:6; display:inline-flex; width:auto; max-width:calc\(100% - 12px\); height:26px; max-height:26px/);
-    assert.doesNotMatch(profileRoot, /position:static|flex-wrap:wrap|box-shadow|(?:^|;\s*)width:100%|flex:(?:1|0) 0 100%/);
-    assert.match(styleSource, /\.\$\{PROFILE_HOST_CLASS\} \{ position:relative !important; \}/);
+    assert.match(profileRoot, /position:fixed !important/);
+    assert.match(profileRoot, /inset:auto/);
+    assert.match(profileRoot, /z-index:2147483000 !important/);
+    assert.match(profileRoot, /display:inline-flex/);
+    assert.match(profileRoot, /width:max-content/);
+    assert.match(profileRoot, /max-width:min\(340px,calc\(100vw - 16px\)\)/);
+    assert.match(profileRoot, /min-height:18px; max-height:20px/);
+    assert.match(profileRoot, /margin:0/);
+    assert.match(profileRoot, /transform:none/);
+    assert.doesNotMatch(profileRoot, /position:static|margin-left:auto|float:|(?:^|;\s*)width:100%|flex:(?:1|0) 0 100%/);
+    assert.match(styleSource, /body > #\$\{TARGET_CONTEXT_ID\}\.wc-profile-context \{ position:fixed !important/);
+    assert.match(rosterRoot, /position:relative !important/);
+    assert.match(rosterRoot, /width:100%/);
+    assert.match(rosterRoot, /max-width:100%/);
+    assert.match(rosterRoot, /margin:5px 0/);
+    assert.match(styleSource, /#\$\{ROSTER_CONTEXT_ID\} > summary \{ display:flex; min-height:32px/);
+    assert.match(styleSource, /#\$\{ROSTER_CONTEXT_ID\} \.wc-native-roster-panel-host \{ display:block; width:100%; min-width:0/);
+    assert.match(styleSource, /#\$\{PANEL_ID\}\.wc-inline-accordion \.wc-body \{ display:block !important/);
+    assert.doesNotMatch(styleSource, /div#\$\{TARGET_CONTEXT_ID\}\.wc-profile-context|span#\$\{TARGET_CONTEXT_ID\}\.wc-profile-context/);
     assert.match(compactStates, /min-width:0; max-width:100%; flex:1 1 auto/);
     assert.match(compactStates, /overflow:hidden/);
     assert.doesNotMatch(compactStates, /flex:0 0 auto/);
     assert.match(compactActions, /min-width:0; flex:0 0 auto; flex-wrap:nowrap; gap:2px; margin-left:auto/);
     assert.match(compactState, /min-width:0; min-height:20px; max-width:145px; flex:0 1 auto; overflow:hidden/);
     assert.match(compactResult, /min-width:0; min-height:20px; max-width:150px; flex:0 1 auto/);
-    assert.match(profileLoadoutTip, /top:auto; bottom:calc\(100% \+ 4px\)/);
+    assert.match(profileLoadoutTip, /top:calc\(100% \+ 4px\); bottom:auto/);
     assert.match(styleSource, /@media \(pointer:coarse\) \{ #\$\{TARGET_CONTEXT_ID\} \.wc-button,[\s\S]*?min-width:36px; min-height:36px/);
     assert.match(styleSource, /#\$\{TARGET_CONTEXT_ID\} \.wc-attack-icon,[\s\S]*?min-width:36px; min-height:36px/);
-    assert.match(styleSource, /#\$\{TARGET_CONTEXT_ID\}\.wc-profile-context \{ height:44px; max-height:44px/);
+    assert.match(styleSource, /body > #\$\{TARGET_CONTEXT_ID\}\.wc-profile-context \{ min-height:20px; max-height:20px/);
+    assert.match(styleSource, /max-width:min\(260px,calc\(100vw - 16px\)\)/);
     assert.match(styleSource, /@media\s*\(max-width:\s*520px\)/);
     assert.match(styleSource, /#\$\{PANEL_ID\}\.wc-roster-mode \{ max-height:none/);
     assert.match(styleSource, /#\$\{PANEL_ID\}\.wc-roster-mode \.wc-body \{ max-height:none; overflow:visible; overscroll-behavior:auto/);
