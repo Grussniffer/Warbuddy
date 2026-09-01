@@ -1,5 +1,29 @@
 # Warbuddy
 
+## Current layout and guides
+
+Native is the default: compact target controls near the profile name and on the attack page, and an expandable inline accordion after Torn's Ranked War Filter heading. Expand the accordion for the full queue, watched targets, filters, Options, and Privacy. Enable **Dibs rows** to show compact controls beside matched enemy Attack actions. **Floating** remains an explicit personal option and uses the same tools and connection.
+
+On your faction's frontend, open:
+
+- `/releases?tab=war` for Warbuddy and roster-display instructions.
+- `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
+- `/releases?tab=changes` for product release notes.
+
+### Ticket Dibs in 0.1.68
+
+When the faction uses lottery mode, clicking the hand enters a pending draw only during the configured window around the five-minute hospital threshold. Once that short window has closed—or when the target is already attackable—the hand performs an immediate atomic Dibs claim. Open a pending hand for the server deadline, ticket breakdown, provisional odds, and **Leave draw**. Only the confirmed winner receives Dibs; no extra click is required, and the script never attacks automatically.
+
+The inline and floating tools show your usable earned tickets and recent outcome. Eligible contested losses earn tickets, contested wins reset earned tickets, and uncontested claims leave them unchanged. One entry or active claim is allowed per player across clients/tabs. Leaving a pending draw does not unwatch the target; releasing a confirmed claim does.
+
+Your faction must first deploy migration 045 and the matching producer/gateway/frontend. The server selects winners and rechecks the current war and matching settled locations. Installing this script alone does not enable the lottery. Existing display placement is unchanged by lottery support; shared rules are configured on the admin page, not in userscript storage.
+
+## 0.1.68
+
+- Supports the shared server-side Dibs ticket lottery, including its exact server-time entry window, immediate claims after that window, pending draws, countdowns, ticket breakdowns, provisional odds, and leaving a draw.
+- Shows your earned tickets and recent result in both the inline and floating tools. Pending entries do not appear as owned Dibs; only the server-selected winner receives the claim.
+- Preserves the existing profile, attack, and roster placement. Requires the lottery backend and database migration 045; faction admins configure the policy on the website.
+
 ## 0.1.67
 
 - Reuses the complete Warbuddy panel inside the expanded ranked-war accordion, including the action queue, retaliation opportunities, watched targets, roster controls, Options, and Privacy.

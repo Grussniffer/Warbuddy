@@ -516,7 +516,7 @@
     return { state: "settled", country, normalizedCountry, status };
   };
 
-  const dibsEligibility = (member, nowMs = Date.now()) => {
+  const dibsEligibility = (member, nowMs = Date.now(), hospitalWindowSeconds = 300) => {
     const targetLocation = dibsSettledLocation(member);
     if (targetLocation.state === "traveling") {
       return { eligible: false, state: "target_traveling", reason: "Target is traveling." };
@@ -528,8 +528,25 @@
     }
     if (targetLocation.status.includes("hospital")) {
       const hospitalUntil = toTimestampMs(member?.status?.untill ?? member?.status?.until);
+      if (!hospitalUntil) {
+        return {
+          eligible: false,
+          state: "target_status_unknown",
+          reason: "Target hospital release time is unknown.",
+          targetLocation: targetLocation.country,
+        };
+      }
       const remainingMs = hospitalUntil - nowMs;
-      if (hospitalUntil > nowMs && remainingMs <= DIBS_HOSPITAL_WINDOW_MS) {
+      if (hospitalUntil <= nowMs) {
+        return {
+          eligible: true,
+          state: "available",
+          reason: `Target is settled in ${targetLocation.country}.`,
+          hospitalUntil,
+          targetLocation: targetLocation.country,
+        };
+      }
+      if (hospitalUntil > nowMs && remainingMs <= hospitalWindowSeconds * 1000) {
         return {
           eligible: true,
           state: "hospitalized",
@@ -540,10 +557,8 @@
       }
       return {
         eligible: false,
-        state: hospitalUntil > nowMs ? "hospital_too_early" : "target_unavailable",
-        reason: hospitalUntil > nowMs
-          ? `Dibs opens five minutes before hospital release (${duration(remainingMs)} remaining).`
-          : "Target hospital status is no longer current.",
+        state: "hospital_too_early",
+        reason: `Dibs entry opens ${duration(hospitalWindowSeconds * 1000)} before hospital release (${duration(remainingMs)} remaining).`,
         hospitalUntil,
         targetLocation: targetLocation.country,
       };
@@ -574,6 +589,7 @@
     claimantName = "You",
     claimantRosterFresh = false,
     targetRosterFresh = false,
+    hospitalWindowSeconds = 300,
   } = {}, nowMs = Date.now()) => {
     if (!claimantRosterFresh || !targetRosterFresh) {
       const state = !claimantRosterFresh && !targetRosterFresh
@@ -635,7 +651,7 @@
       };
     }
 
-    const targetReadiness = dibsEligibility(target, nowMs);
+    const targetReadiness = dibsEligibility(target, nowMs, hospitalWindowSeconds);
     if (!targetReadiness.eligible) {
       return {
         ...targetReadiness,
@@ -656,6 +672,34 @@
       Number(claim?.targetMemberId || 0) === Number(targetMemberId || 0)
       && toTimestampMs(claim?.expiresAt) > nowMs
     ));
+
+  const dibsTicketLabel = (tickets) => `${tickets.total} tickets · Base ${tickets.base} · Losses ${tickets.losses}${(tickets.bonuses || []).map((bonus) => ` · ${bonus.label} ${bonus.tickets}`).join("")}`;
+  const dibsUsesLottery = (policy, target, nowMs, hospitalWindowSeconds = 300, hasOpenDraw = false) => {
+    if (hasOpenDraw) return true;
+    if (policy?.mode !== "lottery" || target?.state !== "hospitalized") return false;
+    const hospitalUntil = Number(target?.hospitalUntil);
+    const now = Number(nowMs);
+    if (!Number.isFinite(hospitalUntil) || !Number.isFinite(now) || hospitalUntil <= now) return false;
+    const finiteSeconds = (value, fallback = 0) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? Math.max(0, numeric) : fallback;
+    };
+    const eligibilityAt = hospitalUntil - finiteSeconds(hospitalWindowSeconds, 300) * 1000;
+    const opensAt = eligibilityAt - finiteSeconds(policy.entryWindowSeconds) * 1000;
+    const closesAt = eligibilityAt + finiteSeconds(policy.availableWindowSeconds) * 1000;
+    return now >= opensAt && now < closesAt;
+  };
+  const dibsLotteryView = (payload, targetMemberId, playerId, nowMs = Date.now()) => {
+    const draw = payload?.draws?.find((candidate) => Number(candidate.targetMemberId) === Number(targetMemberId));
+    const entry = draw?.entrants?.find((candidate) => String(candidate.playerId) === String(playerId));
+    const elsewhere = payload?.draws?.some((candidate) => Number(candidate.targetMemberId) !== Number(targetMemberId)
+      && candidate.entrants?.some((entrant) => String(entrant.playerId) === String(playerId)))
+      || payload?.claims?.some((claim) => Number(claim.targetMemberId) !== Number(targetMemberId)
+        && String(claim.claimedByPlayerId) === String(playerId) && toTimestampMs(claim.expiresAt) > nowMs);
+    const total = draw?.entrants?.reduce((sum, entrant) => sum + entrant.tickets.total, 0) || 0;
+    const closing = !!draw && toTimestampMs(draw.closesAt) <= nowMs;
+    return { draw, entry, elsewhere, closing, chance: entry && total ? Math.round(entry.tickets.total / total * 100) : undefined };
+  };
 
   const stableDibsValue = (value) => {
     if (Array.isArray(value)) return value.map(stableDibsValue);
@@ -946,6 +990,9 @@
     dibsClaimEligibility,
     dibsEligibility,
     dibsFeatureEnabled,
+    dibsTicketLabel,
+    dibsLotteryView,
+    dibsUsesLottery,
     duration,
     fallbackPollDelayMs,
     formatBsp,

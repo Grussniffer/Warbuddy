@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.67";
+  const SCRIPT_VERSION = "0.1.68";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -2099,6 +2099,7 @@
   }
 
   function hasTimeSensitiveState() {
+    if (state.dibs?.draws?.length) return true;
     if (targetPageMemberId()) return targetPageFactionEligible(sessionView());
     if (state.settings?.enabled === false) return false;
     if (currentEnemyFactionId()) return true;
@@ -2386,10 +2387,20 @@
   }
 
   function dibsClaimContext(member, view, claim) {
+    if (state.dibs?.available === false) return { eligible: false, state: "dibs_unavailable", reason: state.dibs.error || "Dibs accounting is temporarily unavailable." };
     if (!state.clockReady) {
       return { eligible: false, state: "clock_syncing", reason: "Synchronizing server time." };
     }
     const claimantPlayerId = claim?.claimedByPlayerId || state.session?.playerId;
+    const lottery = core.dibsLotteryView(view.dibs, member?.member_id, state.session?.playerId, state.nowMs);
+    const policy = lottery.draw?.policy || state.dibs?.policy || state.settings?.dibsPolicy;
+    const baseHospitalWindowSeconds = Number(state.dibs?.hospitalWindowSeconds || 300);
+    const entryWindowSeconds = policy?.mode === "lottery"
+      ? Math.max(0, Number(policy.entryWindowSeconds) || 0)
+      : 0;
+    if (!claim && (lottery.elsewhere || lottery.closing)) {
+      return { eligible: false, state: "draw_pending", reason: lottery.elsewhere ? "Leave your other draw or release your Dibs first." : "Waiting for the server draw result." };
+    }
     const claimant = (view?.ownRoster || []).find((candidate) => (
       Number(candidate?.member_id || 0) === Number(claimantPlayerId || 0)
     ));
@@ -2399,6 +2410,7 @@
       claimantName: claim ? String(claim.claimedByPlayerName || claim.claimedByPlayerId || "Claim holder") : "You",
       claimantRosterFresh: rosterIsFresh(view?.ownFactionId),
       targetRosterFresh: rosterIsFresh(view?.enemyFactionId),
+      hospitalWindowSeconds: baseHospitalWindowSeconds + entryWindowSeconds,
     }, state.nowMs);
   }
 
@@ -2638,7 +2650,16 @@
     const memberId = Number(member?.member_id || 0);
     if (!Number.isSafeInteger(memberId) || memberId <= 0) return "";
     const claim = knownClaim || core.activeDibsClaim(view.dibs, memberId, state.nowMs);
+    const lottery = core.dibsLotteryView(view.dibs, memberId, state.session?.playerId, state.nowMs);
+    const policy = lottery.draw?.policy || state.dibs?.policy || state.settings?.dibsPolicy;
     const eligibility = dibsClaimContext(member, view, claim);
+    const lotteryMode = core.dibsUsesLottery(
+      policy,
+      eligibility,
+      state.nowMs,
+      Number(state.dibs?.hospitalWindowSeconds || 300),
+      !!lottery.draw
+    );
     const isMine = !!claim && String(claim.claimedByPlayerId || "") === String(state.session?.playerId || "");
     const busy = state.dibsBusyTargetId === memberId;
     const anyBusy = state.dibsBusyTargetId > 0 || state.targetsSaving || state.targetQuickBusyId > 0;
@@ -2646,8 +2667,8 @@
       && rosterIsFresh(view.ownFactionId)
       && rosterIsFresh(view.enemyFactionId)
       && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId;
-    const canClaim = !claim && eligibility.eligible && canMutate;
-    const tone = isMine ? "mine" : claim ? "taken" : canClaim ? "" : "unavailable";
+    const canClaim = !claim && !lottery.entry && !lottery.closing && !lottery.elsewhere && eligibility.eligible && canMutate;
+    const tone = isMine || lottery.entry ? "mine" : claim ? "taken" : canClaim ? "" : "unavailable";
     const canRelease = isOnline()
       && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId;
     const remaining = claim ? core.duration(core.toTimestampMs(claim.expiresAt) - state.nowMs) : "";
@@ -2656,23 +2677,47 @@
       : eligibility.reason;
     const label = claim
       ? `Dibs: ${claim.claimedByPlayerName || claim.claimedByPlayerId} - ${remaining} left${eligibility.eligible ? "" : ` - ${eligibility.reason}`}`
+      : lottery.draw
+        ? `${lottery.entry ? "Entered draw" : "Dibs draw"} · ${!state.clockReady ? "Synchronizing server time" : lottery.closing ? "Drawing…" : `draw in ${core.duration(core.toTimestampMs(lottery.draw.closesAt) - state.nowMs)}`} · ${lottery.draw.entrants.length} entrants${lottery.entry ? ` · ${core.dibsTicketLabel(lottery.entry.tickets)} · Current chance ${lottery.chance}% (can change)` : ` · ${eligibility.reason}`}`
       : canClaim
-        ? eligibility.state === "hospitalized"
+        ? lotteryMode ? `Enter Dibs draw · ${eligibility.reason}` : eligibility.state === "hospitalized"
           ? `Claim Dibs - leaves hospital in ${core.duration(Number(eligibility.hospitalUntil || 0) - state.nowMs)} - ${eligibility.reason}`
           : `Claim Dibs - attackable now - ${eligibility.reason}`
         : `Dibs unavailable - ${unavailableReason}`;
-    const action = claim || !canClaim ? "inspect" : "claim";
+    const action = claim || lottery.entry || !canClaim ? "inspect" : "claim";
     const dibsInstanceKey = String(instanceKey || `member-${memberId}`);
     const open = state.dibsInspectTargetId === memberId && state.dibsInspectKey === dibsInstanceKey ? " open" : "";
     const disabled = anyBusy;
-    const release = isMine
-      ? `<button type="button" class="wc-dibs-release" data-dibs-action="release" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-release-${escapeHtml(dibsInstanceKey)}"${!canRelease || anyBusy ? " disabled" : ""}>${busy && state.dibsBusyAction === "release" ? "Releasing..." : "Release & unwatch"}</button>`
+    const release = isMine || lottery.entry
+      ? `<button type="button" class="wc-dibs-release" data-dibs-action="release" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-release-${escapeHtml(dibsInstanceKey)}"${!canRelease || anyBusy || lottery.closing ? " disabled" : ""}>${busy && state.dibsBusyAction === "release" ? "Releasing..." : lottery.entry ? "Leave draw" : "Release & unwatch"}</button>`
       : "";
     const error = state.dibsError && state.dibsErrorTargetId === memberId
       ? `<div class="wc-target-error" role="alert">${escapeHtml(state.dibsError)}</div>`
       : "";
-    const busyLabel = busy && state.dibsBusyAction === "claim" ? "Claiming Dibs" : label;
+    const busyLabel = busy && state.dibsBusyAction === "claim" ? lotteryMode ? "Entering draw" : "Claiming Dibs" : label;
     return `<span class="wc-dibs-wrap${open}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}"><button type="button" class="wc-dibs ${tone}" data-dibs-action="${action}" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-${escapeHtml(dibsInstanceKey)}" aria-label="${escapeHtml(busyLabel)}" aria-expanded="${open ? "true" : "false"}"${busy ? ' aria-busy="true"' : ""} title="${escapeHtml(label)}"${disabled ? " disabled" : ""}>&#9995;</button><span class="wc-dibs-tip" role="status"><button type="button" class="wc-dibs-close" data-dibs-action="close" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" aria-label="Close Dibs details" title="Close">&times;</button>${escapeHtml(label)}${error}${release}</span></span>`;
+  }
+
+  function compactDibsDrawMarkup(view, memberId) {
+    const lottery = core.dibsLotteryView(view.dibs, memberId, state.session?.playerId, state.nowMs);
+    if (!lottery.draw) return "";
+    const label = `${lottery.entry ? "ENTERED" : "DRAW"} · ${!state.clockReady ? "Syncing…" : lottery.closing ? "Drawing…" : core.duration(core.toTimestampMs(lottery.draw.closesAt) - state.nowMs)}`;
+    return `<span class="wc-native-state" title="${escapeHtml(lottery.entry ? core.dibsTicketLabel(lottery.entry.tickets) : "Open the hand icon to enter the Dibs draw")}">${escapeHtml(label)}</span>`;
+  }
+
+  function dibsLotterySummary(view) {
+    const policy = state.dibs?.policy || state.settings?.dibsPolicy;
+    if (!core.dibsFeatureEnabled(state.settings) || policy?.mode !== "lottery" || !state.dibs?.warId) return "";
+    const playerId = String(state.session?.playerId || "");
+    const bank = Math.min(policy.lossTicketCap, Number(state.dibs.balances?.[playerId] || 0));
+    const draw = state.dibs.draws?.find((candidate) => candidate.entrants.some((entry) => entry.playerId === playerId));
+    const result = state.dibs.results?.find((candidate) => state.nowMs - core.toTimestampMs(candidate.settledAt) < 60000
+      && candidate.entrants.some((entry) => entry.playerId === playerId));
+    const entry = result?.entrants.find((candidate) => candidate.playerId === playerId);
+    const outcome = draw ? `Entered: ${draw.targetMemberName} · ${!state.clockReady ? "Synchronizing server time" : core.toTimestampMs(draw.closesAt) <= state.nowMs ? "Drawing…" : core.duration(core.toTimestampMs(draw.closesAt) - state.nowMs)}`
+      : result ? result.winnerPlayerId === playerId ? `You won Dibs on ${result.targetMemberName}`
+        : `${result.targetMemberName}: ${result.winnerPlayerName || "cancelled"}${entry?.ticketChange ? ` · +${entry.ticketChange} ticket(s)` : ""}` : "Use the hand beside a target to enter";
+    return `<div class="wc-section"><div class="wc-section-title"><span>Dibs lottery · ${Number(policy.baseTickets)} base + ${bank} earned tickets</span></div><div class="wc-item-detail">${escapeHtml(outcome)}</div></div>`;
   }
 
   function attackLinkMarkup(url, targetMemberId, actionLabel, view, emphasized = false, knownClaim) {
@@ -2882,6 +2927,7 @@
 
   async function updateDibs(action, targetMemberId, instanceKey = "") {
     const memberId = Number(targetMemberId || 0);
+    const leavingDraw = !!core.dibsLotteryView(state.dibs, memberId, state.session?.playerId, trustedNowMs()).entry;
     if (!core.dibsFeatureEnabled(state.settings) || state.dibsBusyTargetId || state.targetsSaving || state.targetQuickBusyId || !Number.isSafeInteger(memberId) || memberId <= 0) return false;
     if (!isOnline() || state.authTerminal || state.keySaving) {
       showDibsError("Dibs is unavailable until Warbuddy has a fresh live connection.", memberId);
@@ -2928,7 +2974,7 @@
         source: "mutation-response",
         baselineSequence: dibsMutationBaselineSequence,
       });
-      if (action === "release") applyReleasedTargetWatchState(memberId, response);
+      if (action === "release" && (response.releaseKind === "claim" || (!response.releaseKind && !leavingDraw))) applyReleasedTargetWatchState(memberId, response);
       succeeded = true;
       if (action === "claim") {
         state.dibsInspectTargetId = memberId;
@@ -3352,7 +3398,7 @@
       const surface = state.attackTargetId ? "attack" : "profile";
       const compactDibsState = claim
         ? `<span class="wc-native-state wc-native-dibs ${isMine ? "mine" : "taken"}" title="${escapeHtml(dibsTitle)}">${escapeHtml(isMine ? `DIBS YOU · ${dibsRemaining}` : `DIBS ${dibsOwner} · ${dibsRemaining}`)}</span>`
-        : "";
+        : compactDibsDrawMarkup(view, memberId);
       const compactRetaliationState = activeRetaliation
         ? `<span class="wc-native-state wc-native-retal" title="${escapeHtml(retaliationTitle)}">RETAL · ${escapeHtml(retaliationRemaining)}</span>`
         : "";
@@ -3774,7 +3820,7 @@
       ? `${state.keyEditorError ? `<div class="wc-error" role="alert">${escapeHtml(state.keyEditorError)}</div>` : ""}<div class="wc-row"><input class="wc-input wc-secret-input" data-field="api-key" data-focus-key="api-key" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" aria-label="Torn API key" placeholder="${savedKey ? "Replacement Torn API key" : "Torn API key"}" value="${escapeHtml(state.keyDraft)}"${state.keySaving ? " disabled" : ""}><button class="wc-button primary" data-action="connect"${state.keySaving || mutationBusy ? " disabled" : ""}>${state.keySaving ? "Checking..." : savedKey ? "Replace" : "Connect"}</button>${savedKey && !state.authTerminal ? `<button class="wc-button" data-action="cancel-key"${state.keySaving ? " disabled" : ""}>Cancel</button>` : ""}</div>`
       : "";
 
-    const panelBody = `${rosterControls}
+    const panelBody = `${rosterControls}${dibsLotterySummary(view)}
       ${visibleError ? `<div class="wc-error" role="alert">${escapeHtml(visibleError)}</div>` : ""}
       ${state.dibsError ? `<div class="wc-error" role="alert">${escapeHtml(state.dibsError)}</div>` : ""}
       ${state.targetQuickError ? `<div class="wc-error" role="alert">${escapeHtml(state.targetQuickError)}</div>` : ""}

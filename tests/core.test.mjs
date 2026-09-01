@@ -1328,7 +1328,7 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes('"war_dibs"'));
     assert.ok(source.includes('/war-companion/dibs'));
     assert.ok(source.includes('JSON.stringify({ action, targetMemberId: memberId })'));
-    assert.ok(source.includes('data-dibs-action="claim"') || source.includes('const action = claim || !canClaim ? "inspect" : "claim"'));
+    assert.ok(source.includes('data-dibs-action="claim"') || source.includes('const action = claim || lottery.entry || !canClaim ? "inspect" : "claim"'));
     assert.ok(source.includes('data-dibs-action="release"'));
     assert.ok(source.includes("wc-action-section .wc-dibs-tip"));
     assert.match(source, /\.wc-dibs-tip\s*\{[^}]*position:\s*fixed/);
@@ -1352,7 +1352,7 @@ describe("Warbuddy panel state", () => {
     assert.match(contextSource, /targetRosterFresh: rosterIsFresh\(view\?\.enemyFactionId\)/);
     assert.doesNotMatch(contextSource, /requestJson|authenticate|setTimeout|setInterval/);
     assert.doesNotMatch(markupSource, /if \(!claim && !eligibility\.eligible\) return/);
-    assert.match(markupSource, /const action = claim \|\| !canClaim \? "inspect" : "claim"/);
+    assert.match(markupSource, /const action = claim \|\| lottery\.entry \|\| !canClaim \? "inspect" : "claim"/);
     assert.doesNotMatch(markupSource, /aria-disabled/);
     assert.match(markupSource, /aria-expanded="\$\{open \? "true" : "false"\}"/);
     assert.match(markupSource, /aria-label="\$\{escapeHtml\(busyLabel\)\}"/);
@@ -1398,7 +1398,7 @@ describe("Warbuddy panel state", () => {
     assert.ok(source.includes("function applyReleasedTargetWatchState(memberId, response)"));
     assert.ok(source.includes("savedTargetIds().filter((candidate) => candidate !== memberId)"));
     assert.ok(source.includes("normalizeTargetIds(state.targetDraft).filter((candidate) => candidate !== memberId)"));
-    assert.ok(source.includes('if (action === "release") applyReleasedTargetWatchState(memberId, response)'));
+    assert.ok(source.includes('if (action === "release" && (response.releaseKind === "claim" || (!response.releaseKind && !leavingDraw))) applyReleasedTargetWatchState(memberId, response)'));
   });
 
   it("does not start the live ticker before a key is submitted", async () => {
@@ -2680,8 +2680,8 @@ describe("Warbuddy userscript source contracts", () => {
 
     assert.match(dibsMarkupSource, /const anyBusy = state\.dibsBusyTargetId > 0/);
     assert.match(dibsMarkupSource, /const disabled = anyBusy/);
-    assert.match(dibsMarkupSource, /const action = claim \|\| !canClaim \? "inspect" : "claim"/);
-    assert.match(dibsMarkupSource, /!canRelease \|\| anyBusy \? " disabled" : ""/);
+    assert.match(dibsMarkupSource, /const action = claim \|\| lottery\.entry \|\| !canClaim \? "inspect" : "claim"/);
+    assert.match(dibsMarkupSource, /!canRelease \|\| anyBusy \|\| lottery\.closing \? " disabled" : ""/);
     assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
     assert.match(updateDibsSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);
     assert.match(updateDibsSource, /source: "mutation-response"/);
