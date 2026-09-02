@@ -1,6 +1,6 @@
 {
   "name": "warbuddy",
-  "version": "0.1.68",
+  "version": "0.1.69",
   "private": true,
   "description": "Torn war action queue, shared Dibs, retaliation, and personal target userscript.",
   "scripts": {

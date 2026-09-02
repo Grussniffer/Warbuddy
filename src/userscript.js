@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.68";
+  const SCRIPT_VERSION = "0.1.69";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -2201,7 +2201,9 @@
       ownBsp: ownMember?.bsp || 0,
       watchedEnemyMemberIds: state.settings?.watchedEnemyMemberIds || [],
       nowMs: state.nowMs,
-    }).filter((item) => genericSuggestionsEnabled || !String(item.key || "").startsWith("online-")), state.targetGroups);
+    }).filter((item) => genericSuggestionsEnabled || (
+      !String(item.key || "").startsWith("online-") && item?.kind !== "revive"
+    )), state.targetGroups);
     const retaliation = core.activeRetaliations(state.retaliation, Math.floor(state.nowMs / 1000));
     const focusItems = core.buildFocusQueue({ actions, retaliations: retaliation, limit: 3 });
     return { ownFactionId, ownFactionName, enemyFactionId, enemyFactionName, ownRoster, enemyRoster, alliedScore, enemyScore, actions, retaliation, focusItems, dibs: state.dibs, actionQueueEnabled };
@@ -2453,6 +2455,7 @@
     const watchedIds = new Set(savedTargetIds());
     const retaliations = new Map((view.retaliation || []).map((attack) => [Number(attack?.attackerId || 0), attack]));
     const actionableIds = new Set((view.actions || [])
+      .filter(core.actionTargetsAttack)
       .map((action) => Number(action?.memberId || 0))
       .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
     const keep = new Set();
@@ -2738,14 +2741,20 @@
   function actionMarkup(item, view) {
     const member = view.enemyRoster.find((candidate) => Number(candidate?.member_id || 0) === Number(item.memberId || 0));
     const memberId = Number(member?.member_id || item.memberId || 0);
-    const claim = core.dibsFeatureEnabled(state.settings)
+    const targetsAttack = core.actionTargetsAttack(item);
+    const claim = targetsAttack && core.dibsFeatureEnabled(state.settings)
       ? core.activeDibsClaim(view.dibs, memberId, state.nowMs)
       : undefined;
     const group = String(item.targetGroup || "");
     const groupLabel = group ? `<span class="wc-group-tag ${escapeHtml(group)}">${escapeHtml(group)}</span>` : "";
+    const actionLink = !item.url
+      ? ""
+      : targetsAttack
+        ? attackLinkMarkup(item.url, memberId, item.actionLabel || "Open", view, item.severity === "urgent", claim)
+        : `<a class="wc-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.actionLabel || "Profile")}</a>`;
     return `<div class="wc-item ${escapeHtml(item.severity)}">
       <div class="wc-item-text"><div class="wc-item-title">${groupLabel}${escapeHtml(item.title)}</div><div class="wc-item-detail" title="${escapeHtml(item.detail)}">${escapeHtml(item.detail)}</div></div>
-      <div class="wc-item-actions">${member ? dibsMarkup(member, view, claim, `action-${item.key}`) : ""}${item.url ? attackLinkMarkup(item.url, memberId, item.actionLabel || "Open", view, item.severity === "urgent", claim) : ""}</div>
+      <div class="wc-item-actions">${targetsAttack && member ? dibsMarkup(member, view, claim, `action-${item.key}`) : ""}${actionLink}</div>
     </div>`;
   }
 
@@ -3547,6 +3556,7 @@
     const matchupLabel = enemyFactionLabel ? `${ownFactionLabel} vs ${enemyFactionLabel}` : ownFactionLabel;
     const watchedCount = savedTargetIds().length;
     const actionableCount = new Set((view.actions || [])
+      .filter(core.actionTargetsAttack)
       .map((action) => Number(action?.memberId || 0))
       .filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0)).size;
     const retaliationCount = Array.isArray(view.retaliation) ? view.retaliation.length : 0;
@@ -3762,7 +3772,7 @@
     const standardChainMarkup = chainMarkup("wc-chain");
     const rosterChainMarkup = chainMarkup("wc-roster-chain");
     const actionableMemberIds = new Set([
-      ...(view.actions || []).map((action) => Number(action?.memberId || 0)),
+      ...(view.actions || []).filter(core.actionTargetsAttack).map((action) => Number(action?.memberId || 0)),
       ...(view.retaliation || []).map((attack) => Number(attack?.attackerId || 0)),
     ].filter((memberId) => Number.isSafeInteger(memberId) && memberId > 0));
     const rosterFilterOptions = [

@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile as readFileRaw } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
 const core = require("../src/core.cjs");
+
+const readFile = async (...args) => {
+  const source = await readFileRaw(...args);
+  return typeof source === "string" ? source.replace(/\r\n/g, "\n") : source;
+};
 
 const compactSource = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
@@ -290,6 +295,70 @@ describe("Warbuddy action queue", () => {
 
   it("keeps the queue empty when no action is useful", () => {
     assert.deepEqual(core.buildActionQueue({ enemies: [], alliedScore: { chain: 2 } }), []);
+  });
+
+  it("shows a tracker-relative revive transition for five minutes and opens only the profile", () => {
+    const nowMs = 2_000_000_000_000;
+    const revivableSince = new Date(nowMs - (5 * 60_000)).toISOString();
+    const items = core.buildActionQueue({
+      nowMs,
+      enemies: [{
+        member_id: 150,
+        member_name: "Revive target",
+        is_revivable: true,
+        revivable_since: revivableSince,
+        status: { userStatus: "Jail" },
+      }],
+    });
+
+    assert.equal(items.length, 1);
+    assert.equal(items[0].kind, "revive");
+    assert.equal(items[0].intent, "profile");
+    assert.equal(items[0].actionLabel, "Profile");
+    assert.equal(items[0].title, "Revive target became revivable for tracker");
+    assert.equal(items[0].url, "https://www.torn.com/profiles.php?XID=150");
+  });
+
+  it("ignores missing, false, future, and expired tracker-relative revive observations", () => {
+    const nowMs = 2_000_000_000_000;
+    const member = (memberId, fields) => ({
+      member_id: memberId,
+      member_name: `Player ${memberId}`,
+      status: { userStatus: "Jail" },
+      ...fields,
+    });
+    const actions = core.buildActionQueue({
+      nowMs,
+      enemies: [
+        member(151, { is_revivable: false, revivable_since: new Date(nowMs - 1_000).toISOString() }),
+        member(152, { is_revivable: true, revivable_since: null }),
+        member(153, { is_revivable: true, revivable_since: new Date(nowMs + 1).toISOString() }),
+        member(154, { is_revivable: true, revivable_since: new Date(nowMs - (5 * 60_000) - 1).toISOString() }),
+      ],
+    });
+
+    assert.deepEqual(actions, []);
+  });
+
+  it("keeps profile-only revive signals out of Dibs groups and browser notifications", () => {
+    const revive = {
+      key: "revive-160-1999999999000",
+      kind: "revive",
+      intent: "profile",
+      memberId: 160,
+      severity: "info",
+      title: "Revive target became revivable for tracker",
+      detail: "1s ago - opens profile",
+      url: "https://www.torn.com/profiles.php?XID=160",
+    };
+    const attack = { key: "watched-ready-161", memberId: 161 };
+    const grouped = core.applyTargetGroups([revive, attack], { 160: "priority", 161: "chain" });
+
+    assert.equal(core.actionTargetsAttack(revive), false);
+    assert.equal(core.actionTargetsAttack(attack), true);
+    assert.equal(grouped.find((item) => item.memberId === 160)?.targetGroup, "");
+    assert.equal(grouped.find((item) => item.memberId === 161)?.targetGroup, "chain");
+    assert.deepEqual(core.notificationCandidates({ actions: [revive] }), []);
   });
 
   it("omits generic online suggestions when own BSP is unavailable without hiding priority actions", () => {
@@ -636,6 +705,39 @@ describe("Warbuddy live state", () => {
     assert.equal(delta.needsSnapshot, false);
     assert.deepEqual(delta.members, [{ member_id: 2, member_name: "Two updated" }]);
     assert.equal(delta.version, 5);
+  });
+
+  it("accepts a matching lightweight freshness event without replacing roster members", () => {
+    const current = {
+      version: 8,
+      members: [{ member_id: 1, member_name: "One" }],
+      needsSnapshot: false,
+    };
+    const refreshed = core.applyRosterUpdate(current, {
+      mode: "freshness",
+      factionId: "49352",
+      version: 8,
+      sampledAt: "2026-09-03T10:00:00.000Z",
+    });
+
+    assert.equal(refreshed.needsSnapshot, false);
+    assert.equal(refreshed.version, 8);
+    assert.equal(refreshed.members, current.members);
+  });
+
+  it("requests a snapshot for orphaned or mismatched freshness events", () => {
+    const orphaned = core.applyRosterUpdate(undefined, { mode: "freshness", version: 8 });
+    const mismatched = core.applyRosterUpdate({
+      version: 7,
+      members: [{ member_id: 1 }],
+      needsSnapshot: false,
+    }, { mode: "freshness", version: 8 });
+
+    assert.equal(orphaned.needsSnapshot, true);
+    assert.equal(orphaned.version, 0);
+    assert.equal(mismatched.needsSnapshot, true);
+    assert.equal(mismatched.version, 7);
+    assert.deepEqual(mismatched.members, [{ member_id: 1 }]);
   });
 
   it("requests a new snapshot when a delta base is missing", () => {
@@ -2271,6 +2373,20 @@ describe("Warbuddy userscript source contracts", () => {
     assert.equal(core.dibsFeatureEnabled({ enabled: true, dibsEnabled: true, showActionQueue: false }), true);
   });
 
+  it("renders revive observations only from a fresh enemy roster as profile-only queue entries", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const sessionViewSource = compactSource(sourceSection(source, "function sessionView", "const statusView"));
+    const actionMarkupSource = compactSource(sourceSection(source, "function actionMarkup", "function retaliationMarkup"));
+    const attackOnlyFilters = source.match(/\.filter\(core\.actionTargetsAttack\)/g) || [];
+
+    assert.match(sessionViewSource, /item\?\.kind !== "revive"/);
+    assert.match(actionMarkupSource, /const targetsAttack = core\.actionTargetsAttack\(item\)/);
+    assert.match(actionMarkupSource, /targetsAttack && member \? dibsMarkup/);
+    assert.match(actionMarkupSource, /item\.actionLabel \|\| "Profile"/);
+    assert.ok(attackOnlyFilters.length >= 3);
+    assert.match(source, /if \(!isForeground\(\) \|\| !currentEnemyRosterIsFresh\(\)\) return/);
+  });
+
   it("uses a body-mounted profile overlay and an inline ranked-war accordion", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const activationSource = compactSource(sourceSection(
@@ -2628,7 +2744,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.ok(captureAt >= 0 && captureAt < replaceAt && replaceAt < restoreAt);
   });
 
-  it("blocks stale or offline mutations and removes only generic online suggestions", async () => {
+  it("blocks stale or offline mutations and removes generic online and revive suggestions", async () => {
     const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
     const sessionViewSource = compactSource(sourceSection(source, "function sessionView", "const statusView"));
     const dibsMarkupSource = compactSource(sourceSection(source, "function dibsMarkup", "function attackLinkMarkup"));
@@ -2650,7 +2766,9 @@ describe("Warbuddy userscript source contracts", () => {
     const renderSource = compactSource(sourceSection(source, "function render()", "function forgetStoredKey"));
 
     assert.match(sessionViewSource, /const genericSuggestionsEnabled = rosterIsFresh\(ownFactionId\) && rosterIsFresh\(enemyFactionId\)/);
-    assert.match(sessionViewSource, /\.filter\(\(item\) => genericSuggestionsEnabled \|\| !String\(item\.key \|\| ""\)\.startsWith\("online-"\)\)/);
+    assert.match(sessionViewSource, /\.filter\(\(item\) => genericSuggestionsEnabled \|\| \(/);
+    assert.match(sessionViewSource, /!String\(item\.key \|\| ""\)\.startsWith\("online-"\)/);
+    assert.match(sessionViewSource, /item\?\.kind !== "revive"/);
     assert.match(dibsMarkupSource, /const canMutate = isOnline\(\) && rosterIsFresh\(view\.ownFactionId\) && rosterIsFresh\(view\.enemyFactionId\) && !state\.authTerminal && !state\.keySaving/);
     assert.match(saveTargetsSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);
     assert.match(quickWatchSource, /if \(!isOnline\(\) \|\| state\.authTerminal \|\| state\.keySaving\)/);

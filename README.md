@@ -10,6 +10,14 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.69
+
+- Adds a subtle Action Queue item for five minutes after the shared tracker observer measures a player changing from not revivable to revivable.
+- Opens the player's profile instead of presenting an attack or Dibs action, and requires a fresh enemy roster before showing the signal.
+- Treats Torn's `is_revivable` value as observer-specific. It does not claim to know the player's global revive setting and adds no Torn request or browser notification.
+- Accepts lightweight roster-freshness events without replacing members, while requesting a full snapshot if their version cannot be reconciled.
+- Requires backend migration 048 and the matching war-planner and gateway deployment.
+
 ### Ticket Dibs in 0.1.68
 
 When the faction uses lottery mode, clicking the hand enters a pending draw only during the configured window around the five-minute hospital threshold. Once that short window has closed—or when the target is already attackable—the hand performs an immediate atomic Dibs claim. Open a pending hand for the server deadline, ticket breakdown, provisional odds, and **Leave draw**. Only the confirmed winner receives Dibs; no extra click is required, and the script never attacks automatically.

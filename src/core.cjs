@@ -10,6 +10,7 @@
   const CHAIN_WINDOW_MS = 5 * 60 * 1000;
   const URGENT_CHAIN_MS = 2 * 60 * 1000;
   const WATCHED_TARGET_WINDOW_MS = 60 * 1000;
+  const REVIVE_SIGNAL_WINDOW_MS = 5 * 60 * 1000;
   const DIBS_HOSPITAL_WINDOW_MS = 5 * 60 * 1000;
   const TARGET_GROUPS = ["priority", "chain", "later"];
 
@@ -398,12 +399,16 @@
     return rank < 0 ? TARGET_GROUPS.length : rank;
   };
 
+  const actionTargetsAttack = (item) => String(item?.intent || "attack") !== "profile";
+
   const applyTargetGroups = (items, groups) => {
     const normalizedGroups = normalizeTargetGroups(groups);
     return (Array.isArray(items) ? items : [])
       .map((item, sourceOrder) => ({
         ...item,
-        targetGroup: normalizedGroups[String(Number(item?.memberId || 0))] || "",
+        targetGroup: actionTargetsAttack(item)
+          ? normalizedGroups[String(Number(item?.memberId || 0))] || ""
+          : "",
         sourceOrder,
       }))
       .sort((left, right) => {
@@ -797,6 +802,12 @@
   const applyRosterUpdate = (current, payload) => {
     const existing = current || { version: 0, members: [] };
     const version = Number(payload?.version || 0);
+    if (payload?.mode === "freshness") {
+      if (!current || existing.needsSnapshot || !version || existing.version !== version) {
+        return { ...existing, needsSnapshot: true };
+      }
+      return { ...existing, needsSnapshot: false };
+    }
     if (Array.isArray(payload?.members)) {
       return { version, members: payload.members.slice(), needsSnapshot: false };
     }
@@ -840,6 +851,32 @@
         title: `Chain ${alliedScore.chain} needs a hit`,
         detail: `${duration(chainRemaining)} remaining`,
         order: chainEndsAt,
+      });
+    }
+
+    for (const member of enemies) {
+      const memberId = Number(member?.member_id || 0);
+      const revivableSince = toTimestampMs(member?.revivable_since);
+      const elapsed = nowMs - revivableSince;
+      if (
+        member?.is_revivable !== true
+        || !Number.isSafeInteger(memberId)
+        || memberId <= 0
+        || !revivableSince
+        || elapsed < 0
+        || elapsed > REVIVE_SIGNAL_WINDOW_MS
+      ) continue;
+      result.push({
+        kind: "revive",
+        intent: "profile",
+        key: `revive-${memberId}-${revivableSince}`,
+        memberId,
+        severity: "info",
+        title: `${member.member_name || `Player ${memberId}`} became revivable for tracker`,
+        detail: `${duration(elapsed)} ago - opens profile`,
+        actionLabel: "Profile",
+        url: `https://www.torn.com/profiles.php?XID=${encodeURIComponent(String(memberId))}`,
+        order: revivableSince,
       });
     }
 
@@ -975,6 +1012,7 @@
   return {
     activeDibsClaim,
     activeRetaliations,
+    actionTargetsAttack,
     availabilityCategory,
     applyTargetGroups,
     attackOutcomeFromText,
