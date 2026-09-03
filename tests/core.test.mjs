@@ -306,6 +306,7 @@ describe("Warbuddy action queue", () => {
         member_id: 150,
         member_name: "Revive target",
         is_revivable: true,
+        revive_setting: "Friends & faction",
         revivable_since: revivableSince,
         status: { userStatus: "Jail" },
       }],
@@ -315,7 +316,8 @@ describe("Warbuddy action queue", () => {
     assert.equal(items[0].kind, "revive");
     assert.equal(items[0].intent, "profile");
     assert.equal(items[0].actionLabel, "Profile");
-    assert.equal(items[0].title, "Revive target became revivable for tracker");
+    assert.equal(items[0].title, "Revive target revive setting: Friends & faction");
+    assert.match(items[0].detail, /faction-visible setting/);
     assert.equal(items[0].url, "https://www.torn.com/profiles.php?XID=150");
   });
 

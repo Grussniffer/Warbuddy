@@ -14,7 +14,7 @@ On your faction's frontend, open:
 
 - Adds a subtle Action Queue item for five minutes after the shared tracker observer measures a player changing from not revivable to revivable.
 - Opens the player's profile instead of presenting an attack or Dibs action, and requires a fresh enemy roster before showing the signal.
-- Treats Torn's `is_revivable` value as observer-specific. It does not claim to know the player's global revive setting and adds no Torn request or browser notification.
+- Shows Torn's exact revive preference when the backend receives an authorized own-faction value (`Everyone`, `Friends & faction`, or `No one`). Opponent and lower-permission observations remain explicitly tracker-relative; no extra Torn request or browser notification is added.
 - Accepts lightweight roster-freshness events without replacing members, while requesting a full snapshot if their version cannot be reconciled.
 - Requires backend migration 048 and the matching war-planner and gateway deployment.
 

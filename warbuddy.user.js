@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.69
+// @version      0.1.70
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -896,14 +896,19 @@
         || elapsed < 0
         || elapsed > REVIVE_SIGNAL_WINDOW_MS
       ) continue;
+      const reviveSetting = ["Everyone", "Friends & faction", "No one"].includes(String(member?.revive_setting || ""))
+        ? String(member.revive_setting)
+        : "";
       result.push({
         kind: "revive",
         intent: "profile",
         key: `revive-${memberId}-${revivableSince}`,
         memberId,
         severity: "info",
-        title: `${member.member_name || `Player ${memberId}`} became revivable for tracker`,
-        detail: `${duration(elapsed)} ago - opens profile`,
+        title: reviveSetting
+          ? `${member.member_name || `Player ${memberId}`} revive setting: ${reviveSetting}`
+          : `${member.member_name || `Player ${memberId}`} became revivable for tracker`,
+        detail: `${duration(elapsed)} ago - ${reviveSetting ? "faction-visible setting" : "tracker observation"} - opens profile`,
         actionLabel: "Profile",
         url: `https://www.torn.com/profiles.php?XID=${encodeURIComponent(String(memberId))}`,
         order: revivableSince,
@@ -1550,7 +1555,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.69";
+  const SCRIPT_VERSION = "0.1.70";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
