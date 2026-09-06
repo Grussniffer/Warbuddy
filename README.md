@@ -10,6 +10,13 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.74
+
+- Remove the 0.1.73 flex-sizing overrides while retaining content-sized, scrollable panels.
+- Do not insert the fallback roster panel into a flex/grid/table main container while Torn's ranked-war filter is missing. Retry when a safe block mount is available.
+- Add browser checks that compare the surrounding native layout before and after mounting.
+- Prefer the native `.faction-war` container with both roster lists as the inline anchor. No FF Scouter installation is required; existing filters and native lists are left in place.
+
 ## 0.1.73
 
 - Keep the roster panel sized to its content even when Torn or another script applies generic heights or flex/grid stretching.

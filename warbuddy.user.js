@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.73
+// @version      0.1.74
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -1555,7 +1555,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.73";
+  const SCRIPT_VERSION = "0.1.74";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -2038,9 +2038,9 @@
     #${PANEL_ID} .wc-private-actions { display:flex; gap:5px; padding:0 6px 6px; }
     @media (max-width:520px) { #${PANEL_ID} { right:6px; right:max(6px,env(safe-area-inset-right)); bottom:6px; bottom:max(6px,env(safe-area-inset-bottom)); width:calc(100vw - 12px); width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-collapsed { width:auto; } #${PANEL_ID}.wc-integrated-inline { width:100%; max-height:58vh; max-height:58dvh; } #${PANEL_ID}.wc-integrated-inline.wc-collapsed { width:100%; } #${PANEL_ID}.wc-roster-mode { max-height:none; } #${PANEL_ID}.wc-roster-mode .wc-body { max-height:none; overflow:visible; overscroll-behavior:auto; } #${PANEL_ID} .wc-roster-summary { gap:5px; padding:0 6px; } #${PANEL_ID} .wc-roster-matchup { display:none; } #${PANEL_ID} .wc-roster-watched { display:none; } #${PANEL_ID} .wc-roster-controls { align-items:stretch; flex-direction:column; } #${PANEL_ID} .wc-roster-sort { min-height:34px; } #${INTEGRATED_HOST_ID}.wc-attack-host #${PANEL_ID}:not(.wc-collapsed) { position:fixed !important; top:auto !important; right:6px !important; right:max(6px,env(safe-area-inset-right)) !important; bottom:6px !important; bottom:max(6px,env(safe-area-inset-bottom)) !important; left:auto !important; width:calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)); } #${PANEL_ID} .wc-body { max-height:calc(58vh - 42px); max-height:calc(58dvh - 42px); padding-bottom:7px; padding-bottom:max(7px,env(safe-area-inset-bottom)); } #${PANEL_ID} .wc-item-detail { white-space:normal; } }
     @media (pointer:coarse) { #${PANEL_ID} .wc-button, #${PANEL_ID} .wc-link { min-height:40px; padding:8px 10px; } #${PANEL_ID} .wc-icon { width:40px; padding:0; } #${PANEL_ID} .wc-dibs, #${PANEL_ID} .wc-dibs-close { width:40px; height:40px; font-size:16px; } #${PANEL_ID} .wc-loadout-button { width:40px; height:40px; } #${PANEL_ID} .wc-target-option-row { min-height:44px; } #${PANEL_ID} .wc-target-option input { width:18px; height:18px; } #${PANEL_ID} summary { min-height:40px; padding:11px 8px; } .${INLINE_TOOLS_CLASS} button, .${INLINE_TOOLS_CLASS} a { width:30px; height:30px; } .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:30px; padding:0 5px; } }
-    /* Keep host-page flex/grid and generic heights from stretching our panel.
-       These scoped guards follow the responsive rules deliberately. */
-    :is(#${ROSTER_CONTEXT_ID}, #${INTEGRATED_WRAPPER_ID}, #${INTEGRATED_HOST_ID}, #${PANEL_ID}, #${PANEL_ID} > .wc-body) { box-sizing:border-box !important; height:auto !important; min-height:0 !important; block-size:auto !important; min-block-size:0 !important; flex-grow:0 !important; flex-basis:auto !important; align-self:start !important; }
+    /* Bound our own content without changing flex/grid sizing in Torn's layout. */
+    :is(#${ROSTER_CONTEXT_ID}, #${INTEGRATED_WRAPPER_ID}, #${INTEGRATED_HOST_ID}, #${PANEL_ID}, #${PANEL_ID} > .wc-body) { box-sizing:border-box !important; height:fit-content !important; min-height:0 !important; }
+    #${ROSTER_CONTEXT_ID} { clear:both; }
     #${PANEL_ID}.wc-roster-mode > .wc-body { max-height:min(60vh,520px) !important; max-height:min(60dvh,520px) !important; overflow-y:auto !important; overscroll-behavior:contain; }
   `);
 
@@ -4814,11 +4814,32 @@
   }
 
   function rankedWarRosterContextMountPoint() {
+    // Use the native war roster structure, independent of other userscripts.
+    // Do not move Torn's lists or depend on a translated/third-party heading.
+    const scope = rankedWarMainContent();
+    const warContainers = Array.from(scope?.querySelectorAll?.(".faction-war") || []);
+    for (const war of warContainers) {
+      if (war.isConnected === false || war.closest?.(`#${PANEL_ID}, #${ROSTER_CONTEXT_ID}`)) continue;
+      if (!war.querySelector?.(".enemy-faction") || !war.querySelector?.(".your-faction")) continue;
+      const display = typeof getComputedStyle === "function"
+        ? String(getComputedStyle(war)?.display || "").toLowerCase()
+        : "block";
+      if (display && !SAFE_INTEGRATED_PARENT_DISPLAYS.has(display)) continue;
+      let before = war.firstChild || null;
+      if (before?.id === ROSTER_CONTEXT_ID) before = before.nextSibling || null;
+      return { parent: war, before, anchor: war };
+    }
     const bar = rankedWarFilterBar();
     if (!bar?.parentElement || bar.isConnected === false) {
       if (!core.isOwnRankedWarPageUrl(window.location.href, state.session?.factionId || 0)) return null;
       const main = rankedWarMainContent();
       if (!main) return null;
+      // The fallback can run before Torn has rendered its filter bar. Never add
+      // a full-width sibling to a horizontal flex/grid or table layout.
+      const display = typeof getComputedStyle === "function"
+        ? String(getComputedStyle(main)?.display || "").toLowerCase()
+        : "block";
+      if (display && !SAFE_INTEGRATED_PARENT_DISPLAYS.has(display)) return null;
       return { parent: main, before: null, anchor: main };
     }
     let child = bar;
