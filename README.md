@@ -10,6 +10,11 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.73
+
+- Keep the roster panel sized to its content even when Torn or another script applies generic heights or flex/grid stretching.
+- Limit expanded roster contents to 60% of the viewport (maximum 520px), scrolling internally when necessary. The accordion header stays outside the scrolling area.
+
 ## 0.1.72
 
 - Closing the keyless profile setup is remembered across page visits. Reopen it from the userscript floating-panel command or enter your key on your own war roster.
