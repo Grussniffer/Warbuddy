@@ -10,6 +10,12 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.71
+
+- Your own ranked-war page shows the inline panel before a key, backend session, or active war is available. With no saved key, the accordion opens to the API-key input.
+- Profiles show the floating setup panel when no key is saved. This does not change your saved layout preference; normal profile controls resume after connection.
+- If the Ranked War Filter has not loaded, the own-faction panel uses the main content area until its usual inline anchor appears. Unverified opposing faction pages and live target indicators keep their existing access checks.
+
 ## 0.1.69
 
 - Adds a subtle Action Queue item for five minutes after the shared tracker observer measures a player changing from not revivable to revivable.

@@ -1631,7 +1631,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.doesNotMatch(inlineSource, /state\.displayMode/, "ranked-row Retal and Dibs indicators stay native in both layouts");
     assert.match(renderSource, /const targetPage = !!targetPageMemberId\(\)/);
     assert.match(renderSource, /if \(targetPage\) syncTargetPageContext\(view\)/);
-    assert.match(renderSource, /if \(state\.displayMode !== "floating"\)/);
+    assert.match(renderSource, /if \(state\.displayMode !== "floating" && !profileSetup\)/);
     assert.match(renderSource, /const rosterContextReady = syncNativeRosterContext\(view\)/);
     assert.match(renderSource, /syncIntegratedMemberTools\(view\)/);
     assert.match(renderSource, /document\.querySelector\?\.\(`#\$\{ROSTER_CONTEXT_ID\} #\$\{INTEGRATED_HOST_ID\}`\)/);
@@ -2054,7 +2054,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(missingSource, /if \(!isRosterModePage\(view\)\) return floatingPanelMissing/);
     assert.match(missingSource, /if \(state\.displayMode === "floating"\) return floatingPanelMissing/);
     assert.match(missingSource, /const rosterContext = document\.getElementById\(ROSTER_CONTEXT_ID\)/);
-    assert.match(missingSource, /if \(!targetPageFactionEligible\(view\)\) return !!rosterContext/);
+    assert.match(missingSource, /if \(!core\.isOwnRankedWarPageUrl.*&& !targetPageFactionEligible\(view\)\) return !!rosterContext/);
     assert.match(missingSource, /const rosterMountPoint = rankedWarRosterContextMountPoint\(\)/);
     assert.match(missingSource, /String\(rosterContext\.tagName \|\| ""\)\.toUpperCase\(\) !== "DETAILS"/);
     assert.match(missingSource, /!rosterMountPoint\?\.parent \|\| rosterContext\.parentNode !== rosterMountPoint\.parent/);
@@ -2873,6 +2873,45 @@ describe("Warbuddy userscript source contracts", () => {
 });
 
 describe("Warbuddy route activation", () => {
+  it("mounts an expanded own-war setup accordion without a key, session, or war data", async () => {
+    const source = await readFile(new URL("../src/userscript.js", import.meta.url), "utf8");
+    const syncSource = sourceSection(source, "function syncNativeRosterContext", "function capturePanelFocus");
+    const mount = { insertBefore(node) { node.parentNode = this; } };
+    let element = null;
+    const context = {
+      state: { active: true, displayMode: "native", session: null, rosterControlsOpen: false },
+      core,
+      window: { location: { href: "https://www.torn.com/factions.php?step=your&type=1#/war/rank" } },
+      document: {
+        body: {},
+        getElementById: () => element,
+        createElement: () => (element = {
+          tagName: "DETAILS", open: false, addEventListener() {},
+          querySelector: () => null,
+        }),
+      },
+      isRosterModePage: () => true,
+      targetPageFactionEligible: () => false,
+      rankedWarRosterContextMountPoint: () => ({ parent: mount, before: null }),
+      nativeRosterContextMarkup: () => "<summary>Warbuddy</summary>",
+      getStoredKey: () => "",
+      removeNativeRosterContext() { element = null; },
+      targetMarkupCache: new WeakMap(),
+      ROSTER_CONTEXT_ID: "roster",
+      PANEL_ID: "panel",
+      INTEGRATED_HOST_ID: "host",
+      result: null,
+    };
+    runInNewContext(syncSource + "\nresult = syncNativeRosterContext({});", context);
+    assert.equal(context.result, true);
+    assert.equal(element.parentNode, mount);
+    assert.equal(element.open, true);
+    context.window.location.href = "https://www.torn.com/factions.php?step=profile&ID=999#/war/rank";
+    runInNewContext("result = syncNativeRosterContext({});", context);
+    assert.equal(context.result, false);
+    assert.equal(element, null);
+  });
+
   it("runs throughout Torn faction pages", () => {
     assert.equal(core.isFactionPageUrl("https://www.torn.com/factions.php?step=your#/war/rank"), true);
     assert.equal(core.isFactionPageUrl("https://torn.com/factions.php?step=profile&ID=41309"), true);
@@ -2895,7 +2934,7 @@ describe("Warbuddy route activation", () => {
     assert.equal(core.isWarbuddyPageUrl("https://example.com/factions.php#/war/rank"), false);
   });
 
-  it("does not mount the full panel by default on generic faction, profile, attack, or unrelated pages", async () => {
+  it("shows keyless profile setup while keeping generic faction, attack, and unrelated pages quiet", async () => {
     const faction = await bootUserscript("https://www.torn.com/factions.php?step=your&type=1", { withBody: false });
     assert.equal(faction.elements.has("warbuddy-panel"), false);
 
@@ -2916,7 +2955,9 @@ describe("Warbuddy route activation", () => {
     const profile = await bootUserscript("https://www.torn.com/profiles.php?XID=123", {
       visibilityState: "visible",
     });
-    assert.equal(profile.elements.has("warbuddy-panel"), false);
+    assert.equal(profile.elements.has("warbuddy-panel"), true);
+    assert.match(profile.elements.get("warbuddy-panel").innerHTML, /data-field="api-key"/);
+    assert.equal(profile.storageValues.has("warbuddy_display_mode"), false);
 
     const stocks = await bootUserscript("https://www.torn.com/page.php?sid=stocks");
     assert.equal(stocks.elements.has("warbuddy-panel"), false);
@@ -2954,7 +2995,7 @@ describe("Warbuddy route activation", () => {
         visibilityState: "visible",
         storedValues: { warbuddy_display_mode: "floating" },
       });
-      assert.equal(page.elements.has("warbuddy-panel"), false, `${href} before backend war eligibility`);
+      assert.equal(page.elements.has("warbuddy-panel"), href.includes("profiles.php"), `${href} before backend war eligibility`);
       assert.equal(page.storageValues.get("warbuddy_display_mode"), "floating");
     }
   });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.70
+// @version      0.1.71
 // @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
@@ -1555,7 +1555,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.70";
+  const SCRIPT_VERSION = "0.1.71";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -2858,6 +2858,10 @@
   }
 
   function resolvePanelMount() {
+    if (state.profileTargetId && !getStoredKey()) {
+      removeIntegratedMount(true);
+      return { mount: document.body, placement: "floating", fallback: false };
+    }
     if (state.displayMode === "floating") {
       removeIntegratedMount(true);
       return { mount: document.body, placement: "floating", fallback: false };
@@ -4800,7 +4804,12 @@
 
   function rankedWarRosterContextMountPoint() {
     const bar = rankedWarFilterBar();
-    if (!bar?.parentElement || bar.isConnected === false) return null;
+    if (!bar?.parentElement || bar.isConnected === false) {
+      if (!core.isOwnRankedWarPageUrl(window.location.href, state.session?.factionId || 0)) return null;
+      const main = rankedWarMainContent();
+      if (!main) return null;
+      return { parent: main, before: null, anchor: main };
+    }
     let child = bar;
     let parent = bar.parentElement;
     for (let depth = 0; parent && depth < 5; depth += 1) {
@@ -5118,7 +5127,7 @@
       !state.active
       || state.displayMode === "floating"
       || !isRosterModePage(view)
-      || !targetPageFactionEligible(view)
+      || (!core.isOwnRankedWarPageUrl(window.location.href, state.session?.factionId || 0) && !targetPageFactionEligible(view))
       || !document.body
     ) {
       removeNativeRosterContext();
@@ -5154,7 +5163,8 @@
       if (retainedPanel && panelHost) panelHost.appendChild(retainedPanel);
       targetMarkupCache.set(context, markup);
     }
-    if (context.open !== state.rosterControlsOpen) context.open = state.rosterControlsOpen;
+    const open = !getStoredKey() || state.rosterControlsOpen;
+    if (context.open !== open) context.open = open;
     return true;
   }
 
@@ -5223,7 +5233,8 @@
     const view = sessionView();
     const targetPage = !!targetPageMemberId();
     const rankedWarPage = isRosterModePage(view);
-    if (targetPage && !targetPageFactionEligible(view)) {
+    const profileSetup = !!state.profileTargetId && !getStoredKey();
+    if (targetPage && !profileSetup && !targetPageFactionEligible(view)) {
       document.getElementById(PANEL_ID)?.remove();
       removeTargetContext();
       removeNativeRosterContext();
@@ -5235,7 +5246,7 @@
     if (targetPage) syncTargetPageContext(view);
     else removeTargetContext();
     let mountState;
-    if (state.displayMode !== "floating") {
+    if (state.displayMode !== "floating" && !profileSetup) {
       if (!rankedWarPage) {
         document.getElementById(PANEL_ID)?.remove();
         removeNativeRosterContext();
@@ -5684,6 +5695,7 @@
 
   function activeSurfaceMissing(view = sessionView()) {
     if (!state.active) return false;
+    if (state.profileTargetId && !getStoredKey()) return !document.getElementById(PANEL_ID);
     const floatingPanelMissing = state.displayMode === "floating" && !document.getElementById(PANEL_ID);
     if (targetPageMemberId()) {
       const context = document.getElementById(TARGET_CONTEXT_ID);
@@ -5700,7 +5712,7 @@
     if (!isRosterModePage(view)) return floatingPanelMissing;
     if (state.displayMode === "floating") return floatingPanelMissing;
     const rosterContext = document.getElementById(ROSTER_CONTEXT_ID);
-    if (!targetPageFactionEligible(view)) return !!rosterContext;
+    if (!core.isOwnRankedWarPageUrl(window.location.href, state.session?.factionId || 0) && !targetPageFactionEligible(view)) return !!rosterContext;
     const rosterMountPoint = rankedWarRosterContextMountPoint();
     if (
       !rosterContext
@@ -5710,6 +5722,7 @@
       || !rosterContext.querySelector?.(".wc-native-brand")
       || !rosterContext.querySelector?.(`#${INTEGRATED_HOST_ID} > #${PANEL_ID}`)
     ) return true;
+    if (!targetPageFactionEligible(view)) return false;
     const signedBoard = rankedWarBoardForView(view);
     const board = signedBoard?.parentElement && signedBoard.isConnected !== false
       ? signedBoard
