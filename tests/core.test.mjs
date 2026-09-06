@@ -2201,6 +2201,7 @@ describe("Warbuddy userscript source contracts", () => {
       const context = {
         result: null,
         state: { displayMode },
+        profileSetupVisible: () => false,
         PANEL_ID: "warbuddy-panel",
         document: {
           body,
@@ -2231,6 +2232,7 @@ describe("Warbuddy userscript source contracts", () => {
       const context = {
         value,
         state: { displayMode: "floating" },
+        getStoredKey: () => "saved-key",
         core: { normalizeDisplayMode: core.normalizeDisplayMode },
         DISPLAY_MODE_STORAGE: "warbuddy_display_mode",
         PANEL_ID: "warbuddy-panel",
@@ -2895,6 +2897,8 @@ describe("Warbuddy route activation", () => {
       rankedWarRosterContextMountPoint: () => ({ parent: mount, before: null }),
       nativeRosterContextMarkup: () => "<summary>Warbuddy</summary>",
       getStoredKey: () => "",
+      storage: { get: () => "" },
+      ROSTER_CONTROLS_STORAGE: "warbuddy_roster_controls_open",
       removeNativeRosterContext() { element = null; },
       targetMarkupCache: new WeakMap(),
       ROSTER_CONTEXT_ID: "roster",
@@ -2906,6 +2910,9 @@ describe("Warbuddy route activation", () => {
     assert.equal(context.result, true);
     assert.equal(element.parentNode, mount);
     assert.equal(element.open, true);
+    context.storage.get = () => "0";
+    runInNewContext("result = syncNativeRosterContext({});", context);
+    assert.equal(element.open, false, "user can collapse setup without a key");
     context.window.location.href = "https://www.torn.com/factions.php?step=profile&ID=999#/war/rank";
     runInNewContext("result = syncNativeRosterContext({});", context);
     assert.equal(context.result, false);
@@ -2958,6 +2965,17 @@ describe("Warbuddy route activation", () => {
     assert.equal(profile.elements.has("warbuddy-panel"), true);
     assert.match(profile.elements.get("warbuddy-panel").innerHTML, /data-field="api-key"/);
     assert.equal(profile.storageValues.has("warbuddy_display_mode"), false);
+    profile.menuCommands.get("Warbuddy: use native layout")();
+    assert.equal(profile.elements.has("warbuddy-panel"), false);
+    profile.setVisibility("visible");
+    assert.equal(profile.elements.has("warbuddy-panel"), false, "dismissed setup stays closed");
+    const dismissed = await bootUserscript("https://www.torn.com/profiles.php?XID=456", {
+      visibilityState: "visible",
+      storedValues: { warbuddy_setup_dismissed: "1" },
+    });
+    assert.equal(dismissed.elements.has("warbuddy-panel"), false, "dismissal survives profile navigation");
+    dismissed.menuCommands.get("Warbuddy: use floating panel")();
+    assert.equal(dismissed.elements.has("warbuddy-panel"), true, "setup can be reopened manually");
 
     const stocks = await bootUserscript("https://www.torn.com/page.php?sid=stocks");
     assert.equal(stocks.elements.has("warbuddy-panel"), false);

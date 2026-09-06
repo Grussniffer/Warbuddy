@@ -5,10 +5,11 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.71";
+  const SCRIPT_VERSION = "0.1.72";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
+  const SETUP_DISMISSED_STORAGE = "warbuddy_setup_dismissed";
   const FOCUS_STORAGE = "warbuddy_focus_mode";
   const NOTIFICATION_STORAGE = "warbuddy_notifications";
   const TARGET_GROUP_STORAGE = "warbuddy_target_groups";
@@ -1307,8 +1308,13 @@
     return host;
   }
 
+  function profileSetupVisible() {
+    return !!state.profileTargetId && !getStoredKey()
+      && String(storage.get(SETUP_DISMISSED_STORAGE, "")) !== "1";
+  }
+
   function resolvePanelMount() {
-    if (state.profileTargetId && !getStoredKey()) {
+    if (profileSetupVisible()) {
       removeIntegratedMount(true);
       return { mount: document.body, placement: "floating", fallback: false };
     }
@@ -1323,6 +1329,7 @@
 
   function setDisplayMode(value) {
     const nextMode = core.normalizeDisplayMode(value);
+    if (!getStoredKey()) storage.set(SETUP_DISMISSED_STORAGE, nextMode === "floating" ? "0" : "1");
     state.displayMode = nextMode;
     storage.set(DISPLAY_MODE_STORAGE, nextMode);
     if (nextMode === "floating") {
@@ -3613,7 +3620,8 @@
       if (retainedPanel && panelHost) panelHost.appendChild(retainedPanel);
       targetMarkupCache.set(context, markup);
     }
-    const open = !getStoredKey() || state.rosterControlsOpen;
+    const open = state.rosterControlsOpen
+      || (!getStoredKey() && String(storage.get(ROSTER_CONTROLS_STORAGE, "")) === "");
     if (context.open !== open) context.open = open;
     return true;
   }
@@ -3683,7 +3691,7 @@
     const view = sessionView();
     const targetPage = !!targetPageMemberId();
     const rankedWarPage = isRosterModePage(view);
-    const profileSetup = !!state.profileTargetId && !getStoredKey();
+    const profileSetup = profileSetupVisible();
     if (targetPage && !profileSetup && !targetPageFactionEligible(view)) {
       document.getElementById(PANEL_ID)?.remove();
       removeTargetContext();
@@ -4145,7 +4153,7 @@
 
   function activeSurfaceMissing(view = sessionView()) {
     if (!state.active) return false;
-    if (state.profileTargetId && !getStoredKey()) return !document.getElementById(PANEL_ID);
+    if (profileSetupVisible()) return !document.getElementById(PANEL_ID);
     const floatingPanelMissing = state.displayMode === "floating" && !document.getElementById(PANEL_ID);
     if (targetPageMemberId()) {
       const context = document.getElementById(TARGET_CONTEXT_ID);

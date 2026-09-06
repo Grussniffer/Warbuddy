@@ -10,6 +10,11 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.72
+
+- Closing the keyless profile setup is remembered across page visits. Reopen it from the userscript floating-panel command or enter your key on your own war roster.
+- The inline war-roster setup can stay collapsed without a saved API key.
+
 ## 0.1.71
 
 - Your own ranked-war page shows the inline panel before a key, backend session, or active war is available. With no saved key, the accordion opens to the API-key input.
