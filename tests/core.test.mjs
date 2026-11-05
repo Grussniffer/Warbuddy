@@ -615,6 +615,7 @@ describe("Warbuddy live state", () => {
     const contextSource = sourceSection(source, "function dibsClaimContext", "function syncIntegratedMemberTools");
     const context = {
       state: { clockReady: false },
+      core,
       result: null,
     };
     runInNewContext(`${contextSource}\nresult = dibsClaimContext({}, {}, undefined);`, context);
@@ -1415,7 +1416,8 @@ describe("Warbuddy panel state", () => {
     assert.match(persistSource, /const memberIds = normalizeTargetIds\(value\)/);
     assert.match(persistSource, /data: JSON\.stringify\(\{ memberIds \}\)/);
     assert.match(saveSource, /await persistWatchedTargetIds\(state\.targetDraft\)/);
-    assert.ok(source.includes('save only your watched-target list'));
+    assert.ok(source.includes('save your watched-target list'));
+    assert.ok(source.includes('your own Medout reservation'));
     assert.doesNotMatch(source, /faction-configured watched/i);
     assert.doesNotMatch(source, /Personal targets pinned near landing/i);
     assert.doesNotMatch(source, /wc-target-note/);
@@ -2305,7 +2307,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(source, /id="\$\{INTEGRATED_HOST_ID\}" class="wc-native-roster-panel-host"/);
     assert.match(source, /data-field="roster-dibs-buttons"/);
     assert.match(source, /panel\.querySelector\('\[data-field="roster-dibs-buttons"\]'\)/);
-    assert.match(source, /function handleInlineToolAction\(event\) \{\s*if \(handleDibsControlAction\(event\)\) return/);
+    assert.match(source, /function handleInlineToolAction\(event\) \{\s*if \(handleMedoutControlAction\(event\)\) return;\s*if \(handleDibsControlAction\(event\)\) return/);
     assert.match(inlineSource, /warbuddy-attack-dibs-mine/);
     assert.match(inlineSource, /warbuddy-attack-dibs-taken/);
     assert.match(inlineSource, /core\.rosterOrder\(flags, member, state\.nowMs\)/);
@@ -2325,7 +2327,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(source, /function rankedWarStatusCell\(row, attackLink\)/);
     assert.match(source, /classList\.remove\(STATUS_CELL_CLASS\)/);
     assert.match(styleSource, /\.warbuddy-roster-action-cell \{ position:relative !important/);
-    assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\} \{ position:absolute; left:2px; top:50%;[\s\S]*?overflow:visible/);
+    assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\} \{ position:absolute; left:2px; top:calc\(50% - 10px\);[\s\S]*?overflow:visible/);
     assert.match(styleSource, /\.\$\{ROSTER_ACTIONS_CLASS\}:empty \{ display:none/);
     assert.match(styleSource, /a\.warbuddy-attack-has-dibs \{ box-sizing:border-box !important; padding-left:24px !important/);
   });
@@ -2804,7 +2806,7 @@ describe("Warbuddy userscript source contracts", () => {
     assert.match(dibsMarkupSource, /const disabled = anyBusy/);
     assert.match(dibsMarkupSource, /const action = claim \|\| lottery\.entry \|\| !canClaim \? "inspect" : "claim"/);
     assert.match(dibsMarkupSource, /!canRelease \|\| anyBusy \|\| lottery\.closing \? " disabled" : ""/);
-    assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
+    assert.match(updateDibsSource, /state\.dibsBusyTargetId \|\| state\.medoutBusyTargetId \|\| state\.targetsSaving \|\| state\.targetQuickBusyId \|\| !Number\.isSafeInteger\(memberId\)/);
     assert.match(updateDibsSource, /const expectsSocketSnapshot = socketIsOpen\(\)/);
     assert.match(updateDibsSource, /source: "mutation-response"/);
     assert.match(updateDibsSource, /baselineSequence: dibsMutationBaselineSequence/);

@@ -1,11 +1,11 @@
 {
   "name": "warbuddy",
-  "version": "0.1.74",
+  "version": "0.1.75",
   "private": true,
   "description": "Torn war action queue, shared Dibs, retaliation, and personal target userscript.",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test tests/core.test.mjs tests/tab-broker.test.mjs tests/lottery.test.mjs tests/panel-layout.test.mjs",
+    "test": "node --test tests/core.test.mjs tests/tab-broker.test.mjs tests/lottery.test.mjs tests/panel-layout.test.mjs tests/medout.test.mjs tests/medout-userscript.test.mjs",
     "check": "npm run test && npm run build"
   }
 }

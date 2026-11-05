@@ -78,7 +78,7 @@ test('actual Dibs markup offers withdrawal without claiming ownership', () => {
   const html = runInNewContext(`${section}\ndibsMarkup({ member_id: 11 }, view, undefined, 'test')`, {
     core, view: { dibs, ownFactionId: '1', enemyFactionId: '2' },
     state: { settings: {}, dibs, nowMs: now, session: { playerId: '1' }, dibsInspectTargetId: 11, dibsInspectKey: 'test' },
-    dibsClaimContext: () => ({ eligible: true, reason: 'Same location' }), isOnline: () => true, rosterIsFresh: () => true,
+    dibsClaimContext: () => ({ eligible: true, reason: 'Same location' }), medoutDetailsMarkup: () => '', isOnline: () => true, rosterIsFresh: () => true,
     escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
   });
   assert.match(html, /Entered draw/);
@@ -114,6 +114,7 @@ test('actual Dibs markup distinguishes draw entry from immediate claim at the cl
       dibsInspectKey: '',
     },
     dibsClaimContext: () => eligibility,
+    medoutDetailsMarkup: () => '',
     isOnline: () => true,
     rosterIsFresh: () => true,
     escapeHtml: value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;'),

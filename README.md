@@ -10,6 +10,15 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.75
+
+- Explains Medout-protected Dibs with a lock and the assigned partners, their unfinished hits, and who is Online. Assigned partners still follow the normal hospital, location and Dibs rules.
+- Adds a small person-plus shortcut beside eligible enemy names and in profile/attack tools, only while faction admins have enabled Medout Buddies for the current matched war. One click reserves the smaller of your remaining allowance and the opponent's free capacity; it does not create an agreement or attack automatically.
+- Your buddy's icon opens their agreement, unfinished hits, and the personalized introduction. The same summary appears inside the existing expandable Warbuddy tools. Read/copy the message, open the Torn profile, or use the website to update replies, record progress, release or change buddies.
+- Shares Medout snapshots through the existing connection and tab broker. No new Torn requests or polling are added. Live reservations pause during disconnects or compatible HTTP fallback; existing Dibs protection explanations still work.
+- Requires the matching backend update to permit the scoped Medout topic and own reservation action. No database migration is needed. On an older backend, the optional Medout topic is unavailable without breaking other Warbuddy features.
+- After updating, reload open Torn tabs so they all use the current shared-connection protocol and Medout subscription.
+
 ## 0.1.74
 
 - Remove the 0.1.73 flex-sizing overrides while retaining content-sized, scrollable panels.

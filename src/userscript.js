@@ -5,7 +5,8 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.74";
+  const SCRIPT_VERSION = "0.1.75";
+  const MEDOUT_URL = "https://askelads.grusmedia.no/medout-buddies";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";
   const DISPLAY_MODE_STORAGE = "warbuddy_display_mode";
@@ -46,7 +47,7 @@
   const SCRIPT_CHECK_IN_RETRY_MS = 60_000;
   const isTornPda = typeof window.PDA_httpGet === "function" || typeof window.PDA_httpPost === "function";
   const MAX_WATCHED_TARGETS = 25;
-  const TOPICS = ["war_tracker_settings", "war_tracker", "score", "retaliation", "war_dibs"];
+  const TOPICS = ["war_tracker_settings", "war_tracker", "score", "retaliation", "war_dibs", "war_medout"];
   const inlineMarkupCache = new WeakMap();
   const panelMarkupCache = new WeakMap();
   const targetMarkupCache = new WeakMap();
@@ -157,6 +158,15 @@
     dibsError: "",
     dibsErrorTargetId: 0,
     dibsErrorTimer: 0,
+    medoutPlan: null,
+    medoutPendingPlan: null,
+    medoutApplicationSequence: 0,
+    medoutSynced: false,
+    medoutBusyTargetId: 0,
+    medoutError: "",
+    medoutNotice: "",
+    medoutIntroOpen: false,
+    medoutCopySequence: 0,
     nowMs: Date.now(),
     clockOffsetMs: 0,
     clockSource: "device",
@@ -288,8 +298,9 @@
     .${INLINE_TOOLS_CLASS} .wc-inline-retal { width:auto; min-width:18px; color:#38bdf8; padding:0 3px; font-size:10px; font-weight:700; }
     .${INLINE_TOOLS_CLASS} button:disabled { opacity:.45; cursor:wait; }
     .warbuddy-roster-action-cell { position:relative !important; }
-    .${ROSTER_ACTIONS_CLASS} { position:absolute; left:2px; top:50%; z-index:4; display:inline-flex; width:20px; height:20px; align-items:center; justify-content:center; overflow:visible; margin:0; transform:translateY(-50%); font:9px/1.2 Arial,Helvetica,sans-serif; }
+    .${ROSTER_ACTIONS_CLASS} { position:absolute; left:2px; top:calc(50% - 10px); z-index:4; display:inline-flex; width:20px; height:20px; align-items:center; justify-content:center; overflow:visible; margin:0; font:9px/1.2 Arial,Helvetica,sans-serif; }
     .${ROSTER_ACTIONS_CLASS}:empty { display:none; }
+    .${ROSTER_ACTIONS_CLASS}.wc-dibs-open { z-index:2147483646; }
     .${ROSTER_ACTIONS_CLASS} .wc-dibs { width:20px !important; height:20px !important; border-color:#52525b !important; background:#18181b !important; }
     a.warbuddy-attack-has-dibs { box-sizing:border-box !important; padding-left:24px !important; }
     :is(.${ROSTER_ACTIONS_CLASS}, .${INLINE_TOOLS_CLASS}) .wc-native-state { display:inline-flex; min-height:18px; align-items:center; border:1px solid #52525b; border-radius:3px; padding:1px 4px; background:#27272a; color:#e4e4e7; font-weight:700; white-space:nowrap; }
@@ -379,6 +390,17 @@
     .${STATUS_DETAIL_CLASS}.soon { color:#fbbf24 !important; }
     .${STATUS_MISMATCH_CLASS} { box-shadow:inset 0 -2px var(--user-status-blue-color,#22d3ee) !important; }
     @media (hover:hover) and (pointer:fine) { [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS}.quiet { display:none; } [data-warbuddy-member-row]:not(:hover):not(:focus-within) .${INLINE_TOOLS_CLASS} .wc-inline-watch:not(.active) { display:none; } }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-medout { color:#94a3b8; }
+    @media (pointer:coarse) { .${INLINE_TOOLS_CLASS} .wc-medout { width:24px !important; height:24px !important; min-width:24px !important; min-height:24px !important; } }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-medout.mine, :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-dibs.medout-protected { color:#38bdf8; }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-medout-details { display:block; margin-top:6px; padding-top:5px; border-top:1px solid #3f3f46; overflow-wrap:anywhere; }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-medout-details p { margin:4px 0; }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-medout-details .wc-medout-action { display:inline-flex; align-items:center; width:auto !important; height:auto !important; min-height:24px !important; max-width:100%; margin:3px 4px 0 0; border:1px solid #52525b; border-radius:3px; background:#27272a; color:#e4e4e7; padding:3px 6px !important; font:inherit; text-decoration:none; cursor:pointer; }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-medout-message { box-sizing:border-box; display:block; width:100%; max-width:100%; margin-top:6px; border:1px solid #52525b; border-radius:3px; background:#09090b; color:#e4e4e7; padding:6px; font:11px/1.4 Arial,Helvetica,sans-serif; resize:vertical; }
+    :is(#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}, .${ROSTER_ACTIONS_CLASS}) .wc-dibs-tip { max-height:min(65vh,420px); overflow-y:auto; }
+    #${PANEL_ID} .wc-medout-summary { margin:6px 0; border:1px solid #075985; border-radius:4px; background:#082f49; padding:6px 8px; overflow-wrap:anywhere; }
+    #${PANEL_ID} .wc-medout-summary > p { margin:4px 0; }
+    #${PANEL_ID} .wc-medout-summary > a { color:#7dd3fc; text-decoration:underline; }
     #${PANEL_ID} * { box-sizing:border-box; letter-spacing:0; }
     #${PANEL_ID}.wc-collapsed .wc-body { display:none; }
     #${PANEL_ID}.wc-collapsed { width:auto; min-width:154px; max-width:calc(100vw - 20px); border-radius:999px; }
@@ -708,6 +730,15 @@
     state.loadouts.clear();
     state.loadoutRequestFactionId = "";
     state.loadoutRequestAt = 0;
+    state.medoutPlan = null;
+    state.medoutPendingPlan = null;
+    state.medoutApplicationSequence += 1;
+    state.medoutSynced = false;
+    state.medoutBusyTargetId = 0;
+    state.medoutError = "";
+    state.medoutNotice = "";
+    state.medoutIntroOpen = false;
+    state.medoutCopySequence += 1;
     clearDibsState(true);
     closeDibsDetails();
     state.dibsError = "";
@@ -725,6 +756,9 @@
     resetPersonalTargets();
   };
   const prepareSameKeyReconnect = () => {
+    state.medoutSynced = false;
+    state.medoutPendingPlan = null;
+    state.medoutApplicationSequence += 1;
     state.lastLiveDataAt = 0;
     state.rosterDataAt.clear();
     state.dibsError = "";
@@ -830,10 +864,11 @@
     if (hasDemand || tabBroker.shouldOwnTransport()) void ensureConnected();
   }
 
-  function requestSharedState() {
+  function requestSharedState(retryStale = true) {
     if (!sharedBrokerEnabled() || tabBroker.isLeader() || !tabBroker.hasLeader()) return;
     const leaderId = tabBroker.leaderId();
     const requestSequence = ++state.sharedStateRequestSequence;
+    const medoutBaselineSequence = state.medoutApplicationSequence;
     tabBroker.request("state", {}, 5_000)
       .then((payload) => {
         if (
@@ -841,7 +876,7 @@
           || tabBroker?.isLeader()
           || tabBroker?.leaderId() !== leaderId
         ) return;
-        applySharedState(payload);
+        if (applySharedState(payload, { medoutBaselineSequence }) === false && retryStale) requestSharedState(false);
       })
       .catch(() => {
         if (
@@ -1548,6 +1583,9 @@
   }
 
   function closeOwnedTransport(message = "Live connection closed") {
+    state.medoutSynced = false;
+    state.medoutPendingPlan = null;
+    state.medoutApplicationSequence += 1;
     clearTimeout(state.reconnectTimer);
     state.reconnectTimer = 0;
     stopFallbackPolling();
@@ -1563,6 +1601,9 @@
 
   function recoverFailedSocket(socket, reason = "Connection failed") {
     if (socket !== state.socket) return;
+    state.medoutSynced = false;
+    state.medoutPendingPlan = null;
+    state.medoutApplicationSequence += 1;
     clearSocketConnectTimer();
     state.socket = null;
     state.socketOpenedAt = 0;
@@ -1588,6 +1629,9 @@
   }
 
   function subscribeTopics(socket) {
+    state.medoutSynced = false;
+    state.medoutPendingPlan = null;
+    state.medoutApplicationSequence += 1;
     for (const topic of TOPICS) {
       socket.send(JSON.stringify({
         type: "subscribe",
@@ -1621,6 +1665,116 @@
       return;
     }
     if (state.fallbackActive) pollFallbackSnapshot();
+  }
+
+  function medoutScope(view = sessionView()) {
+    return { ownerFactionId: String(state.session?.factionId || ""), enemyFactionId: String(view.enemyFactionId || ""), warStartedAt: view.alliedScore?.start || view.enemyScore?.start || "" };
+  }
+
+  function activeMedoutPlan(view = sessionView()) {
+    const plan = state.medoutPlan;
+    return state.settings?.enabled !== false && plan?.enabled === true && plan.available !== false
+      && core.medoutPlanMatches(plan, medoutScope(view)) ? plan : null;
+  }
+
+  function applyMedoutSnapshot(payload, { synced = true } = {}) {
+    const owner = String(state.session?.factionId || "");
+    if (!owner || !payload || String(payload.ownerFactionId || "") !== owner) return false;
+    if (payload.available === false && !payload.warId) {
+      state.medoutPlan = null; state.medoutPendingPlan = null; state.medoutApplicationSequence += 1; state.medoutSynced = false; state.medoutIntroOpen = false;
+      state.medoutNotice = ""; state.medoutCopySequence += 1;
+      return true;
+    }
+    if (!payload.warId || !Array.isArray(payload.enemyMembers) || !Array.isArray(payload.assignments) || !Array.isArray(payload.targets)) return false;
+    const scope = medoutScope();
+    if (scope.enemyFactionId && scope.warStartedAt && !core.medoutPlanMatches(payload, scope)) {
+      const pendingScope = { ownerFactionId: owner, enemyFactionId: String(payload.enemyFactionId || ""), warStartedAt: payload.warStartedAt };
+      if (synced && socketIsOpen() && core.medoutPlanMatches(payload, pendingScope) && Date.parse(payload.warStartedAt) > Date.parse(scope.warStartedAt)
+        && (!state.medoutPendingPlan || Date.parse(payload.warStartedAt) > Date.parse(state.medoutPendingPlan.warStartedAt)
+          || (payload.warId === state.medoutPendingPlan.warId && Number(payload.revision) >= Number(state.medoutPendingPlan.revision)))) {
+        state.medoutPendingPlan = payload; state.medoutApplicationSequence += 1;
+      }
+      return false;
+    }
+    if (state.medoutPlan?.warId === payload.warId && Number(payload.revision) < Number(state.medoutPlan.revision)) return false;
+    const playerId = String(state.session?.playerId || "");
+    const before = core.medoutPersonal(state.medoutPlan, playerId);
+    state.medoutPlan = { ...payload, currentPlayerId: playerId };
+    state.medoutApplicationSequence += 1;
+    state.medoutSynced = synced === true && socketIsOpen();
+    const after = core.medoutPersonal(state.medoutPlan, playerId);
+    if (before?.assignmentId !== after?.assignmentId || before?.introduction !== after?.introduction) {
+      state.medoutNotice = ""; state.medoutIntroOpen = false; state.medoutCopySequence += 1;
+    }
+    return true;
+  }
+
+  function medoutCanMutate(view = sessionView()) {
+    const plan = activeMedoutPlan(view);
+    return !!plan && !plan.readOnly && state.medoutSynced === true && socketIsOpen()
+      && rosterIsFresh(view.ownFactionId) && rosterIsFresh(view.enemyFactionId)
+      && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId
+      && !state.dibsBusyTargetId && !state.medoutBusyTargetId;
+  }
+
+  async function reserveMedoutBuddy(targetId) {
+    const memberId = Number(targetId || 0), view = sessionView(), plan = activeMedoutPlan(view);
+    if (!Number.isSafeInteger(memberId) || memberId <= 0 || !plan || !medoutCanMutate(view)) return false;
+    if (!view.enemyRoster.some(member => Number(member.member_id) === memberId)) return false;
+    const target = core.medoutTarget(plan, memberId, state.session?.playerId);
+    if (!target.canReserve || !Number.isInteger(target.plannedHits) || target.plannedHits <= 0) return false;
+    const epoch = state.authEpoch, owner = String(state.session?.factionId || ""), player = String(state.session?.playerId || "");
+    state.medoutBusyTargetId = memberId; state.medoutError = ""; state.medoutNotice = "";
+    scheduleRender();
+    try {
+      const result = await requestSocketAction("war_medout:claim", { warId: plan.warId, targetId: String(memberId), plannedHits: target.plannedHits });
+      if (epoch !== state.authEpoch || owner !== String(state.session?.factionId || "") || player !== String(state.session?.playerId || "")
+        || !core.medoutPlanMatches(plan, medoutScope())) return false;
+      applyMedoutSnapshot(result, { synced: state.medoutSynced });
+      const personal = core.medoutPersonal(activeMedoutPlan(), player);
+      if (personal?.targetId !== String(memberId)) return false;
+      state.medoutNotice = personal.isContact && personal.introduction ? "Buddy reserved. Copy the introduction and send it in Torn." : "Buddy reserved. Coordinate with the named contact.";
+      state.dibsInspectTargetId = memberId; state.dibsInspectKey = `medout-${memberId}`;
+      return true;
+    } catch (error) {
+      if (epoch === state.authEpoch && owner === String(state.session?.factionId || "") && player === String(state.session?.playerId || "")
+        && core.medoutPlanMatches(plan, medoutScope())) state.medoutError = String(error?.message || "Could not reserve this buddy. Open the overview to check available capacity.");
+      return false;
+    } finally {
+      if (epoch === state.authEpoch && owner === String(state.session?.factionId || "") && player === String(state.session?.playerId || "")) state.medoutBusyTargetId = 0;
+      scheduleRender();
+    }
+  }
+
+  async function copyMedoutIntroduction() {
+    const personal = core.medoutPersonal(activeMedoutPlan(), state.session?.playerId);
+    if (!personal?.introduction) return;
+    const epoch = state.authEpoch, sequence = ++state.medoutCopySequence, assignmentId = personal.assignmentId;
+    const current = () => epoch === state.authEpoch && sequence === state.medoutCopySequence
+      && core.medoutPersonal(activeMedoutPlan(), state.session?.playerId)?.assignmentId === assignmentId;
+    try {
+      await navigator.clipboard.writeText(personal.introduction);
+      if (current()) state.medoutNotice = "Introduction copied. Send it in Torn, then mark Contacted on the website.";
+    } catch {
+      if (current()) { state.medoutIntroOpen = true; state.medoutNotice = "Clipboard unavailable. Select and copy the message below."; }
+    }
+    if (current()) scheduleRender();
+  }
+
+  function handleMedoutControlAction(event, control = event.target?.closest?.("[data-medout-action]")) {
+    if (!control || !event.currentTarget?.contains?.(control)) return false;
+    event.preventDefault(); event.stopPropagation();
+    const action = String(control.dataset?.medoutAction || ""), memberId = Number(control.dataset?.medoutTarget || 0);
+    if (action === "claim") void reserveMedoutBuddy(memberId);
+    if (action === "copy-intro") void copyMedoutIntroduction();
+    if (action === "read-intro") { state.medoutIntroOpen = !state.medoutIntroOpen; scheduleRender(); }
+    if (action === "inspect") {
+      const key = `medout-${memberId}`;
+      if (state.dibsInspectTargetId === memberId && state.dibsInspectKey === key) closeDibsDetails();
+      else { state.dibsInspectTargetId = memberId; state.dibsInspectKey = key; }
+      scheduleRender();
+    }
+    return true;
   }
 
   function applyDibsSnapshot(payload, { source, baselineSequence } = {}) {
@@ -1676,9 +1830,14 @@
         const factionId = String(score?.factionId || score?.faction_id || "");
         if (factionId) state.scores.set(factionId, score);
       }
+      if (state.medoutPendingPlan && core.medoutPlanMatches(state.medoutPendingPlan, medoutScope())) {
+        const pendingPlan = state.medoutPendingPlan; state.medoutPendingPlan = null;
+        applyMedoutSnapshot(pendingPlan);
+      }
     }
     if (topic === "retaliation") state.retaliation = payload || { attacks: [] };
     if (topic === "war_dibs") applyDibsSnapshot(payload, { source: dibsSource });
+    if (topic === "war_medout") applyMedoutSnapshot(payload);
     scheduleRender();
     setTimeout(() => {
       maybeLoadEnemyLoadouts();
@@ -1687,6 +1846,13 @@
   }
 
   function applyFallbackSnapshot(snapshot) {
+    state.medoutPlan = null;
+    state.medoutPendingPlan = null;
+    state.medoutApplicationSequence += 1;
+    state.medoutSynced = false;
+    state.medoutIntroOpen = false;
+    state.medoutNotice = "";
+    state.medoutCopySequence += 1;
     syncTrustedClock(snapshot?.serverTime || snapshot?.generatedAt, "snapshot");
     state.lastLiveDataAt = Date.now();
     state.settings = snapshot?.settings || null;
@@ -1761,6 +1927,8 @@
       retaliation: state.retaliation,
       loadouts: Array.from(state.loadouts.entries()),
       dibs: state.dibs,
+      medoutPlan: state.medoutPlan,
+      medoutSynced: state.medoutSynced && directSocketIsOpen(),
       rosterDataAt: Array.from(state.rosterDataAt.entries()),
       fallbackRevision: state.fallbackRevision,
     };
@@ -1776,6 +1944,10 @@
     if (!payload || tabBroker?.isLeader()) return;
     const phase = String(payload.phase || "");
     state.sharedSocketOpen = payload.socketOpen === true && phase === "connected";
+    if (!state.sharedSocketOpen) {
+      if (state.medoutSynced || state.medoutPendingPlan) state.medoutApplicationSequence += 1;
+      state.medoutSynced = false; state.medoutPendingPlan = null;
+    }
     state.sharedTransportPhase = phase;
     if (["connected", "fallback", "connecting", "authenticating", "error", "paused"].includes(phase)) {
       state.phase = phase;
@@ -1789,8 +1961,11 @@
     scheduleRender();
   }
 
-  function applySharedState(payload) {
+  function applySharedState(payload, { medoutBaselineSequence } = {}) {
     if (!payload || tabBroker?.isLeader()) return;
+    // A delayed bootstrap must not undo a newer live plan, match or transport.
+    // One fresh broker read can fill any fields omitted by the live event.
+    if (medoutBaselineSequence !== undefined && medoutBaselineSequence !== state.medoutApplicationSequence) return false;
     applySharedTransport(payload);
     state.settings = payload.settings || null;
     state.rosters = new Map(Array.isArray(payload.rosters) ? payload.rosters : []);
@@ -1799,6 +1974,10 @@
     state.retaliation = payload.retaliation || { attacks: [] };
     state.loadouts = new Map(Array.isArray(payload.loadouts) ? payload.loadouts : []);
     applyDibsSnapshot(payload.dibs, { source: "shared-hydration" });
+    if (medoutBaselineSequence === undefined || medoutBaselineSequence === state.medoutApplicationSequence) {
+      if (payload.medoutPlan) applyMedoutSnapshot(payload.medoutPlan, { synced: payload.medoutSynced === true && state.sharedSocketOpen });
+      else { state.medoutPlan = null; state.medoutPendingPlan = null; state.medoutSynced = false; state.medoutApplicationSequence += 1; }
+    }
     state.rosterDataAt = new Map(Array.isArray(payload.rosterDataAt) ? payload.rosterDataAt : []);
     state.fallbackRevision = String(payload.fallbackRevision || "");
     syncTargetDraft();
@@ -1807,6 +1986,7 @@
       maybeLoadEnemyLoadouts();
       evaluateNotifications();
     }, 0);
+    return true;
   }
 
   function handleTabBrokerData(type, payload) {
@@ -1966,6 +2146,14 @@
       return;
     }
     if (message?.type === "error") {
+      if (String(message.id || "").startsWith("wc-war_medout-") || message.topic === "war_medout" || message.error?.topic === "war_medout") {
+        state.medoutPlan = null;
+        state.medoutPendingPlan = null;
+        state.medoutApplicationSequence += 1;
+        state.medoutSynced = false;
+        scheduleRender();
+        return;
+      }
       state.error = message?.error?.error || message?.error?.message || "Live update failed";
       scheduleRender();
       publishSharedTransport();
@@ -2063,6 +2251,9 @@
       });
       socket.addEventListener("close", (event) => {
         if (socket !== state.socket) return;
+        state.medoutSynced = false;
+        state.medoutPendingPlan = null;
+        state.medoutApplicationSequence += 1;
         clearSocketConnectTimer();
         state.socket = null;
         state.socketOpenedAt = 0;
@@ -2392,6 +2583,7 @@
   }
 
   function handleInlineToolAction(event) {
+    if (handleMedoutControlAction(event)) return;
     if (handleDibsControlAction(event)) return;
     const control = event.target?.closest?.("[data-inline-action]");
     if (!control || !event.currentTarget?.contains?.(control)) return;
@@ -2404,6 +2596,8 @@
   }
 
   function dibsClaimContext(member, view, claim) {
+    const medout = core.medoutDibsRestriction(view?.dibs || state.dibs, member?.member_id, claim?.claimedByPlayerId || state.session?.playerId);
+    if (medout.blocked) return { eligible: false, state: "medout_reserved", reason: medout.reason };
     if (state.dibs?.available === false) return { eligible: false, state: "dibs_unavailable", reason: state.dibs.error || "Dibs accounting is temporarily unavailable." };
     if (!state.clockReady) {
       return { eligible: false, state: "clock_syncing", reason: "Synchronizing server time." };
@@ -2574,6 +2768,7 @@
             rosterActions.innerHTML = rosterMarkup;
             inlineMarkupCache.set(rosterActions, rosterMarkup);
           }
+          rosterActions.classList.toggle("wc-dibs-open", !!rosterActions.querySelector(".wc-dibs-wrap.open"));
         }
         attackLink.classList.toggle("warbuddy-attack-has-dibs", state.rosterDibsButtons);
       }
@@ -2584,10 +2779,12 @@
       const fallbackDibsControl = !attackLink && state.rosterDibsButtons
         ? dibsMarkup(member, view, claim, `roster-fallback-${memberId}`)
         : "";
-      const toolsMarkup = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${!attackLink && retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationTitle)}" title="${escapeHtml(retaliationTitle)}">Hosp = Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}${fallbackDibsState}${fallbackDibsControl}`;
+      const toolsMarkup = `<button type="button" class="wc-inline-watch${watched ? " active" : ""}" data-inline-action="watch" aria-label="${watched ? "Stop watching" : "Watch"} ${escapeHtml(member.member_name || `Player ${memberId}`)}" title="${watched ? "Stop watching" : "Watch target"}"${watchBusy ? " disabled" : ""}>${watched ? "&#9733;" : "&#9734;"}</button>${medoutMarkup(member, view)}${!attackLink && retaliation ? `<a class="wc-inline-retal" href="${escapeHtml(retaliation.attackUrl || core.attackUrl(memberId))}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(retaliationTitle)}" title="${escapeHtml(retaliationTitle)}">Hosp = Retal ${escapeHtml(retaliationRemaining)}</a>` : ""}${fallbackDibsState}${fallbackDibsControl}`;
       if (inlineMarkupCache.get(tools) !== toolsMarkup) {
+        const focusSnapshot = capturePanelFocus(tools);
         tools.innerHTML = toolsMarkup;
         inlineMarkupCache.set(tools, toolsMarkup);
+        restorePanelFocus(tools, focusSnapshot);
       }
     }
 
@@ -2663,11 +2860,48 @@
     });
   }
 
+  function medoutDetailsMarkup(view, memberId) {
+    const plan = activeMedoutPlan(view), player = String(state.session?.playerId || "");
+    const protection = core.medoutDibsRestriction(view?.dibs || state.dibs, memberId, player);
+    const personal = core.medoutPersonal(plan, player), mine = personal?.targetId === String(memberId) ? personal : null;
+    const target = plan ? core.medoutTarget(plan, memberId, player) : null;
+    const assigned = target?.active?.length > 0;
+    if (!protection.protected && !mine && !target?.canReserve && !assigned) return "";
+    const partners = protection.protected ? `<strong>Reserved for medout buddies</strong><ul>${protection.buddies.map(buddy => `<li>${escapeHtml(buddy.playerName || buddy.playerId)} · ${escapeHtml(buddy.remainingHits)} hits left${buddy.online ? " · Online" : ""}</li>`).join("")}</ul><p>${protection.blocked ? "An unfinished partner is Online. Their reservation takes priority over your Dibs." : "You are an assigned partner. Normal hospital, location and Dibs rules still apply."}</p>` : "";
+    const own = mine ? `<strong>Your buddy · ${escapeHtml(mine.remainingHits)} / ${escapeHtml(mine.reservedHits)} hits left</strong><p>${escapeHtml(mine.introduction ? "Send a Torn message to agree the hit trade." : mine.statusLabel)}${!mine.isContact && mine.contactName ? ` · Coordinate through ${escapeHtml(mine.contactName)}.` : ""}</p>` : "";
+    const introduction = mine?.introduction ? `<button type="button" class="wc-medout-action" data-medout-action="copy-intro" data-medout-target="${Number(memberId)}" data-focus-key="medout-copy-${Number(memberId)}">Copy introduction</button><button type="button" class="wc-medout-action" data-medout-action="read-intro" data-medout-target="${Number(memberId)}" aria-expanded="${state.medoutIntroOpen ? "true" : "false"}" data-focus-key="medout-read-${Number(memberId)}">${state.medoutIntroOpen ? "Hide introduction" : "Read introduction"}</button><a class="wc-medout-action" href="https://www.torn.com/profiles.php?XID=${Number(memberId)}" target="_blank" rel="noopener noreferrer">Torn profile ↗</a>${state.medoutIntroOpen ? `<p>Copy this suggested message into Torn. Mark Contacted on the website after sending.</p><textarea class="wc-medout-message" data-focus-key="medout-message-${Number(memberId)}" aria-label="Suggested medout introduction" rows="7" readonly>${escapeHtml(mine.introduction)}</textarea>` : ""}` : "";
+    const reserve = !mine && target?.canReserve ? `<button type="button" class="wc-medout-action" data-medout-action="claim" data-medout-target="${Number(memberId)}"${medoutCanMutate(view) ? "" : " disabled"}>Reserve buddy · ${escapeHtml(target.plannedHits)} hits</button>` : "";
+    const paused = plan && (!state.medoutSynced || !socketIsOpen() || plan.readOnly) ? "<p>Live coordination is paused. Check the website before changing your agreement.</p>" : "";
+    const contact = !protection.protected && !mine && assigned ? `<p>Medout partners: ${target.active.map(partner => escapeHtml(partner.playerName || partner.playerId)).join(", ")}.${target.contactName ? ` Contact: ${escapeHtml(target.contactName)}.` : ""} Coordinate through the contact before sending another message. Dibs follows the current Online-partner protection rule.</p>` : "";
+    return `<span class="wc-medout-details">${partners}${own}${contact}${paused}${introduction}${reserve}<a class="wc-medout-action" href="${MEDOUT_URL}" target="_blank" rel="noopener noreferrer">${mine ? "Manage buddy" : "Medout overview"} ↗</a>${state.medoutNotice && mine ? `<p role="status">${escapeHtml(state.medoutNotice)}</p>` : ""}${state.medoutError ? `<p role="alert">${escapeHtml(state.medoutError)}</p>` : ""}</span>`;
+  }
+
+  function medoutMarkup(member, view, instanceKey) {
+    const plan = activeMedoutPlan(view), memberId = Number(member?.member_id || 0);
+    if (!plan || !Number.isSafeInteger(memberId) || memberId <= 0 || String(member.faction_id || view.enemyFactionId) !== String(view.enemyFactionId) || !view.enemyRoster.some(candidate => Number(candidate.member_id) === memberId)) return "";
+    const target = core.medoutTarget(plan, memberId, state.session?.playerId);
+    if (!target.isMine && !target.canReserve) return "";
+    const key = `medout-${memberId}`, open = state.dibsInspectTargetId === memberId && state.dibsInspectKey === key;
+    const label = target.isMine ? `Your medout buddy ${target.targetName}. Open agreement and introduction.` : `Reserve ${target.plannedHits} medout hits with ${target.targetName}`;
+    const disabled = !target.isMine && !medoutCanMutate(view);
+    const tip = target.isMine ? `<span class="wc-dibs-tip" role="status"><button type="button" class="wc-dibs-close" data-dibs-action="close" data-dibs-target="${memberId}" data-dibs-instance="${key}" aria-label="Close Medout details">&times;</button>${medoutDetailsMarkup(view, memberId)}</span>` : "";
+    return `<span class="wc-dibs-wrap${open ? " open" : ""}" data-medout-control="${memberId}"><button type="button" class="wc-dibs wc-medout${target.isMine ? " mine" : ""}" data-medout-action="${target.isMine ? "inspect" : "claim"}" data-medout-target="${memberId}" data-focus-key="medout-${memberId}" aria-label="${escapeHtml(label)}" title="${escapeHtml(disabled ? "Medout reservations need a fresh live connection. Manage on the website if unavailable." : label)}"${target.isMine ? ` aria-expanded="${open ? "true" : "false"}"` : ""}${disabled ? " disabled" : ""}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2H3M19 8v6m-3-3h6"/></svg></button>${tip}</span>`;
+  }
+
+  function medoutSummaryMarkup(view) {
+    const plan = activeMedoutPlan(view);
+    if (!plan) return "";
+    const personal = core.medoutPersonal(plan, state.session?.playerId);
+    return personal ? `<section class="wc-medout-summary" aria-label="Your medout buddy"><strong>Your buddy: ${escapeHtml(personal.targetName)}</strong>${medoutDetailsMarkup(view, personal.targetId)}</section>`
+      : `<section class="wc-medout-summary" aria-label="Medout buddies"><strong>Medout buddies enabled</strong><p>Use the person-plus icon beside an opponent to reserve a hit-trading buddy.</p><a href="${MEDOUT_URL}" target="_blank" rel="noopener noreferrer">Open Medout overview ↗</a>${state.medoutError ? `<p role="alert">${escapeHtml(state.medoutError)}</p>` : ""}</section>`;
+  }
+
   function dibsMarkup(member, view, knownClaim, instanceKey) {
     if (!core.dibsFeatureEnabled(state.settings)) return "";
     const memberId = Number(member?.member_id || 0);
     if (!Number.isSafeInteger(memberId) || memberId <= 0) return "";
     const claim = knownClaim || core.activeDibsClaim(view.dibs, memberId, state.nowMs);
+    const medoutProtection = core.medoutDibsRestriction(view.dibs, memberId, state.session?.playerId);
     const lottery = core.dibsLotteryView(view.dibs, memberId, state.session?.playerId, state.nowMs);
     const policy = lottery.draw?.policy || state.dibs?.policy || state.settings?.dibsPolicy;
     const eligibility = dibsClaimContext(member, view, claim);
@@ -2680,13 +2914,13 @@
     );
     const isMine = !!claim && String(claim.claimedByPlayerId || "") === String(state.session?.playerId || "");
     const busy = state.dibsBusyTargetId === memberId;
-    const anyBusy = state.dibsBusyTargetId > 0 || state.targetsSaving || state.targetQuickBusyId > 0;
+    const anyBusy = state.dibsBusyTargetId > 0 || state.medoutBusyTargetId > 0 || state.targetsSaving || state.targetQuickBusyId > 0;
     const canMutate = isOnline()
       && rosterIsFresh(view.ownFactionId)
       && rosterIsFresh(view.enemyFactionId)
       && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId;
     const canClaim = !claim && !lottery.entry && !lottery.closing && !lottery.elsewhere && eligibility.eligible && canMutate;
-    const tone = isMine || lottery.entry ? "mine" : claim ? "taken" : canClaim ? "" : "unavailable";
+    const tone = medoutProtection.blocked && !claim && !lottery.entry ? "medout-protected" : isMine || lottery.entry ? "mine" : claim ? "taken" : canClaim ? "" : "unavailable";
     const canRelease = isOnline()
       && !state.authTerminal && !state.keySaving && !state.targetsSaving && !state.targetQuickBusyId;
     const remaining = claim ? core.duration(core.toTimestampMs(claim.expiresAt) - state.nowMs) : "";
@@ -2713,7 +2947,7 @@
       ? `<div class="wc-target-error" role="alert">${escapeHtml(state.dibsError)}</div>`
       : "";
     const busyLabel = busy && state.dibsBusyAction === "claim" ? lotteryMode ? "Entering draw" : "Claiming Dibs" : label;
-    return `<span class="wc-dibs-wrap${open}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}"><button type="button" class="wc-dibs ${tone}" data-dibs-action="${action}" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-${escapeHtml(dibsInstanceKey)}" aria-label="${escapeHtml(busyLabel)}" aria-expanded="${open ? "true" : "false"}"${busy ? ' aria-busy="true"' : ""} title="${escapeHtml(label)}"${disabled ? " disabled" : ""}>&#9995;</button><span class="wc-dibs-tip" role="status"><button type="button" class="wc-dibs-close" data-dibs-action="close" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" aria-label="Close Dibs details" title="Close">&times;</button>${escapeHtml(label)}${error}${release}</span></span>`;
+    return `<span class="wc-dibs-wrap${open}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}"><button type="button" class="wc-dibs ${tone}" data-dibs-action="${action}" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" data-focus-key="dibs-${escapeHtml(dibsInstanceKey)}" aria-label="${escapeHtml(busyLabel)}" aria-expanded="${open ? "true" : "false"}"${busy ? ' aria-busy="true"' : ""} title="${escapeHtml(label)}"${disabled ? " disabled" : ""}>${medoutProtection.blocked && !claim && !lottery.entry ? "&#128274;" : "&#9995;"}</button><span class="wc-dibs-tip" role="status"><button type="button" class="wc-dibs-close" data-dibs-action="close" data-dibs-target="${memberId}" data-dibs-instance="${escapeHtml(dibsInstanceKey)}" aria-label="Close Dibs details" title="Close">&times;</button>${escapeHtml(label)}${medoutDetailsMarkup(view, memberId)}${error}${release}</span></span>`;
   }
 
   function compactDibsDrawMarkup(view, memberId) {
@@ -2851,7 +3085,7 @@
   }
 
   async function saveWatchedTargets() {
-    if (state.targetsSaving || state.targetQuickBusyId || state.dibsBusyTargetId || !state.targetsDirty) return;
+    if (state.targetsSaving || state.targetQuickBusyId || state.dibsBusyTargetId || state.medoutBusyTargetId || !state.targetsDirty) return;
     if (!isOnline() || state.authTerminal || state.keySaving) {
       state.targetError = "Watched targets are unavailable until the connection is restored.";
       scheduleRender();
@@ -2879,7 +3113,7 @@
 
   async function toggleWatchedTarget(targetMemberId) {
     const memberId = Number(targetMemberId || 0);
-    if (state.targetQuickBusyId || state.targetsSaving || state.dibsBusyTargetId || !Number.isSafeInteger(memberId) || memberId <= 0) return;
+    if (state.targetQuickBusyId || state.targetsSaving || state.dibsBusyTargetId || state.medoutBusyTargetId || !Number.isSafeInteger(memberId) || memberId <= 0) return;
     if (!isOnline() || state.authTerminal || state.keySaving) {
       state.targetQuickError = "Watched targets are unavailable until the connection is restored.";
       scheduleRender();
@@ -2952,7 +3186,7 @@
   async function updateDibs(action, targetMemberId, instanceKey = "") {
     const memberId = Number(targetMemberId || 0);
     const leavingDraw = !!core.dibsLotteryView(state.dibs, memberId, state.session?.playerId, trustedNowMs()).entry;
-    if (!core.dibsFeatureEnabled(state.settings) || state.dibsBusyTargetId || state.targetsSaving || state.targetQuickBusyId || !Number.isSafeInteger(memberId) || memberId <= 0) return false;
+    if (!core.dibsFeatureEnabled(state.settings) || state.dibsBusyTargetId || state.medoutBusyTargetId || state.targetsSaving || state.targetQuickBusyId || !Number.isSafeInteger(memberId) || memberId <= 0) return false;
     if (!isOnline() || state.authTerminal || state.keySaving) {
       showDibsError("Dibs is unavailable until Warbuddy has a fresh live connection.", memberId);
       scheduleRender();
@@ -3471,13 +3705,14 @@
       const compactError = compactErrorMessage
         ? `<span class="wc-attack-error" role="alert" title="${escapeHtml(compactErrorMessage)}">!</span>`
         : "";
-      return `<span class="wc-native-brand wc-attack-brand" title="Warbuddy · ${escapeHtml(status.label)}">WB</span><span class="wc-native-states">${compactRetaliationState}${compactDibsState}${compactOutcomeMarkup}${compactError}</span><span class="wc-native-actions">${compactLoadoutControl}${compactDibsControl}${compactWatchControl}${toolsControl}</span>`;
+      return `<span class="wc-native-brand wc-attack-brand" title="Warbuddy · ${escapeHtml(status.label)}">WB</span><span class="wc-native-states">${compactRetaliationState}${compactDibsState}${compactOutcomeMarkup}${compactError}</span><span class="wc-native-actions">${compactLoadoutControl}${compactDibsControl}${medoutMarkup(targetRecord, view)}${compactWatchControl}${toolsControl}</span>`;
     }
     return "";
   }
 
   function handleTargetContextAction(event) {
     if (event.currentTarget?.classList?.contains("wc-compact-context")) event.stopPropagation();
+    if (handleMedoutControlAction(event)) return;
     if (handleDibsControlAction(event)) return;
     const control = event.target?.closest?.("[data-action]");
     if (!control || !event.currentTarget?.contains?.(control)) return;
@@ -3786,7 +4021,7 @@
 
     const status = statusView();
     const savedKey = getStoredKey();
-    const mutationBusy = state.targetsSaving || state.targetQuickBusyId > 0 || state.dibsBusyTargetId > 0;
+    const mutationBusy = state.targetsSaving || state.targetQuickBusyId > 0 || state.dibsBusyTargetId > 0 || state.medoutBusyTargetId > 0;
     const trackerDisabled = state.settings?.enabled === false;
     const hasCachedData = state.rosters.size > 0 || state.scores.size > 0;
     const visibleError = state.error && (!hasCachedData || state.authTerminal) ? state.error : "";
@@ -3874,7 +4109,7 @@
       ? `${state.keyEditorError ? `<div class="wc-error" role="alert">${escapeHtml(state.keyEditorError)}</div>` : ""}<div class="wc-row"><input class="wc-input wc-secret-input" data-field="api-key" data-focus-key="api-key" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore="true" data-protonpass-ignore="true" data-form-type="other" aria-label="Torn API key" placeholder="${savedKey ? "Replacement Torn API key" : "Torn API key"}" value="${escapeHtml(state.keyDraft)}"${state.keySaving ? " disabled" : ""}><button class="wc-button primary" data-action="connect"${state.keySaving || mutationBusy ? " disabled" : ""}>${state.keySaving ? "Checking..." : savedKey ? "Replace" : "Connect"}</button>${savedKey && !state.authTerminal ? `<button class="wc-button" data-action="cancel-key"${state.keySaving ? " disabled" : ""}>Cancel</button>` : ""}</div>`
       : "";
 
-    const panelBody = `${rosterControls}${dibsLotterySummary(view)}
+    const panelBody = `${rosterControls}${dibsLotterySummary(view)}${medoutSummaryMarkup(view)}
       ${visibleError ? `<div class="wc-error" role="alert">${escapeHtml(visibleError)}</div>` : ""}
       ${state.dibsError ? `<div class="wc-error" role="alert">${escapeHtml(state.dibsError)}</div>` : ""}
       ${state.targetQuickError ? `<div class="wc-error" role="alert">${escapeHtml(state.targetQuickError)}</div>` : ""}
@@ -3883,7 +4118,7 @@
       ${savedKey ? liveSections : ""}
       ${watchedTargetsSection}
       ${optionsSection}
-      <details data-section="privacy"${state.privacyOpen ? " open" : ""}><summary>Privacy</summary><div class="wc-privacy">The key stays in your userscript storage. Torn and the backend use it to verify your profile and faction. Warbuddy records your version, connection mode, and last use for faction admins. Its scoped session can save only your watched-target list and Dibs actions.</div>${savedKey ? `<div class="wc-private-actions"><button class="wc-button" data-action="refresh"${mutationBusy || state.keySaving ? " disabled" : ""}>Reconnect</button><button class="wc-button" data-action="change-key"${mutationBusy || state.keySaving ? " disabled" : ""}>Change key</button><button class="wc-button" data-action="forget"${mutationBusy || state.keySaving ? " disabled" : ""}>${state.forgetConfirm ? "Confirm forget" : "Forget key"}</button></div>` : ""}</details>
+      <details data-section="privacy"${state.privacyOpen ? " open" : ""}><summary>Privacy</summary><div class="wc-privacy">The key stays in your userscript storage. Torn and the backend use it to verify your profile and faction. Warbuddy records your version, connection mode, and last use for faction admins. Its scoped session can save your watched-target list, Dibs actions, and your own Medout reservation. Agreement changes and administration stay on the website.</div>${savedKey ? `<div class="wc-private-actions"><button class="wc-button" data-action="refresh"${mutationBusy || state.keySaving ? " disabled" : ""}>Reconnect</button><button class="wc-button" data-action="change-key"${mutationBusy || state.keySaving ? " disabled" : ""}>Change key</button><button class="wc-button" data-action="forget"${mutationBusy || state.keySaving ? " disabled" : ""}>${state.forgetConfirm ? "Confirm forget" : "Forget key"}</button></div>` : ""}</details>
     `;
     const standardHeader = `<div class="wc-header">
       <div class="wc-heading"><div class="wc-title-row"><span class="wc-player">${escapeHtml(state.session?.playerName || "Warbuddy")}</span><span class="wc-version">v${SCRIPT_VERSION}</span><span class="wc-header-status"><span class="wc-dot ${status.tone}"></span>${escapeHtml(status.label)}</span></div>${matchupLabel || standardChainMarkup ? `<div class="wc-context">${matchupLabel ? `<span class="wc-matchup" title="${escapeHtml(matchupTitle)}">${escapeHtml(matchupLabel)}</span>` : ""}${standardChainMarkup ? `<span class="wc-chains">${standardChainMarkup}</span>` : ""}</div>` : ""}</div>
@@ -4043,6 +4278,8 @@
     panel.querySelectorAll('[data-dibs-action]').forEach((button) => {
       button.addEventListener("click", handleDibsControlAction);
     });
+    panel.querySelectorAll('[data-medout-action]').forEach(button => button.addEventListener("click", handleMedoutControlAction));
+    panel.querySelectorAll('.wc-medout-message').forEach(input => input.addEventListener("focus", () => input.select()));
     const keyInput = panel.querySelector('[data-field="api-key"]');
     keyInput?.addEventListener("input", (event) => {
       state.keyDraft = String(event.currentTarget?.value || "");
@@ -4118,7 +4355,7 @@
     const input = document.querySelector(`#${TARGET_CONTEXT_ID} [data-field="api-key"], #${PANEL_ID} [data-field="api-key"]`);
     const key = String(input?.value || state.keyDraft || "").trim();
     if (!key || state.keySaving) return;
-    if (state.targetsSaving || state.targetQuickBusyId || state.dibsBusyTargetId) {
+    if (state.targetsSaving || state.targetQuickBusyId || state.dibsBusyTargetId || state.medoutBusyTargetId) {
       state.keyEditorError = "Wait for the current Warbuddy update to finish.";
       scheduleRender();
       return;
@@ -4424,6 +4661,10 @@
   }, 150);
 
   document.addEventListener("visibilitychange", syncVisibilityState);
+  document.addEventListener("focusin", (event) => {
+    const input = event.target;
+    if (input?.matches?.("textarea.wc-medout-message") && input.closest?.(`#${PANEL_ID}, #${TARGET_CONTEXT_ID}, .${INLINE_TOOLS_CLASS}`)) input.select();
+  });
   document.addEventListener("pointerdown", (event) => {
     const target = event.target;
     const closest = target && typeof target.closest === "function" ? target.closest.bind(target) : null;

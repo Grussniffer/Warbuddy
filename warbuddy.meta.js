@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Warbuddy
 // @namespace    https://grusmedia.no/warbuddy
-// @version      0.1.74
-// @description  Shows a war action queue, shared target Dibs, watched targets, and live retaliation opportunities inside Torn.
+// @version      0.1.75
+// @description  Shows a war action queue, shared target Dibs, Medout buddies, watched targets, and live retaliation opportunities inside Torn.
 // @author       SneipLadd [2813921]
 // @homepageURL  https://github.com/Grussniffer/Warbuddy
 // @supportURL   https://github.com/Grussniffer/Warbuddy/issues

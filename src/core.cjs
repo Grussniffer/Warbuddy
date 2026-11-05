@@ -672,6 +672,130 @@
     };
   };
 
+  const medoutDibsRestriction = (dibs, targetMemberId, viewerPlayerId) => {
+    const protection = dibs?.medoutProtection?.[String(targetMemberId)];
+    const buddies = (Array.isArray(protection?.buddies) ? protection.buddies : [])
+      .filter((buddy) => Number(buddy?.remainingHits) > 0);
+    const protectedTarget = buddies.some((buddy) => buddy.online);
+    const names = buddies.map((buddy) => buddy.playerName || buddy.playerId).join(", ");
+    return {
+      protected: protectedTarget,
+      blocked: protectedTarget && !buddies.some((buddy) => String(buddy.playerId) === String(viewerPlayerId)),
+      reason: protectedTarget ? `Reserved for medout buddies ${names} while a buddy is online.` : "",
+      buddies: protectedTarget ? buddies : [],
+      onlineBuddies: protectedTarget ? buddies.filter((buddy) => buddy.online) : [],
+    };
+  };
+
+  const medoutPlanMatches = (plan, context = {}) => {
+    const { ownerFactionId, enemyFactionId, warStartedAt } = context || {};
+    const owner = String(ownerFactionId || ""), enemy = String(enemyFactionId || "");
+    const startedAt = Date.parse(String(warStartedAt || ""));
+    return !!plan && !!owner && !!enemy && owner !== enemy && Number.isFinite(startedAt)
+      && String(plan.ownerFactionId || "") === owner
+      && String(plan.enemyFactionId || "") === enemy
+      && String(plan.warId || "") === `${[owner, enemy].sort().join(":")}:${startedAt}`;
+  };
+
+  const medoutContactLabels = {
+    uncontacted: "Not contacted", contacted: "Contacted · awaiting reply", agreed: "Agreed",
+    declined: "Declined", unavailable: "Unavailable",
+  };
+  const medoutHits = (value) => {
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+  };
+  const medoutAssignments = (plan) => Array.isArray(plan?.assignments) ? plan.assignments : [];
+  const medoutUsedHits = (assignments) => assignments.reduce((total, assignment) => (
+    total + medoutHits(assignment.status === "active" ? assignment.plannedHits : assignment.completedHits)
+  ), 0);
+  const medoutAllowance = (plan, viewerPlayerId) => {
+    const assignments = medoutAssignments(plan).filter((assignment) => String(assignment.playerId) === String(viewerPlayerId));
+    return {
+      remaining: Math.max(0, medoutHits(plan?.hitLimit) - medoutUsedHits(assignments)),
+      active: assignments.find((assignment) => assignment.status === "active"),
+    };
+  };
+  const medoutMemberName = (plan, playerId) => {
+    if (!playerId) return "";
+    return (Array.isArray(plan?.alliedMembers) ? plan.alliedMembers : [])
+      .find((member) => String(member.id) === String(playerId))?.name
+      || medoutAssignments(plan).find((assignment) => String(assignment.playerId) === String(playerId))?.playerName
+      || String(playerId);
+  };
+  const medoutTarget = (plan, targetMemberId, viewerPlayerId) => {
+    const targetId = String(targetMemberId || "");
+    const member = (Array.isArray(plan?.enemyMembers) ? plan.enemyMembers : [])
+      .find((candidate) => String(candidate.id) === targetId);
+    const assignments = medoutAssignments(plan).filter((assignment) => String(assignment.targetId) === targetId);
+    const target = (Array.isArray(plan?.targets) ? plan.targets : [])
+      .find((candidate) => String(candidate.targetId) === targetId) || { contactStatus: "uncontacted" };
+    const active = assignments.filter((assignment) => assignment.status === "active");
+    const capacity = medoutHits(target.capacity ?? plan?.defaultCapacity);
+    const used = medoutUsedHits(assignments), remaining = Math.max(0, capacity - used);
+    const allowance = medoutAllowance(plan, viewerPlayerId);
+    const isMine = !!allowance.active && String(allowance.active.targetId) === targetId;
+    const targetName = String(member?.name || target.name || assignments[0]?.targetName || targetId);
+    const contactStatus = String(target.contactStatus || "uncontacted");
+    const contactName = medoutMemberName(plan, target.contactPlayerId);
+    let availability = "new", stateLabel = contactStatus === "contacted" ? "Needs a new contact" : "Needs contact";
+    if (!member) { availability = "unavailable"; stateLabel = "Left faction"; }
+    else if (contactStatus === "declined" || contactStatus === "unavailable") {
+      availability = "unavailable"; stateLabel = medoutContactLabels[contactStatus];
+    } else if (contactStatus !== "agreed" && active.length) {
+      availability = "waiting"; stateLabel = contactStatus === "uncontacted" ? "Contact reserved" : "Awaiting reply";
+    } else if (!remaining) { availability = "full"; stateLabel = "Fully reserved"; }
+    else if (contactStatus === "agreed") { availability = "ready"; stateLabel = "Ready to join"; }
+    let reason = "", label = "Reserve buddy";
+    if (!plan?.enabled) { reason = "Medout buddies are disabled."; label = "Not enabled"; }
+    else if (plan.available === false || plan.readOnly) {
+      reason = plan.reason || "Waiting for current war information."; label = "Updates paused";
+    } else if (!member) { reason = "No longer in the opponent roster."; label = "Left faction"; }
+    else if (allowance.active) {
+      reason = isMine ? "This is your current buddy." : "Finish or release your current buddy first.";
+      label = isMine ? "Your buddy" : "Buddy already chosen";
+    } else if (!allowance.remaining) { reason = "Your war hit allowance is fully allocated."; label = "Allowance used"; }
+    else if (!remaining) { reason = "This opponent is fully allocated."; label = "Fully reserved"; }
+    else if (contactStatus === "declined" || contactStatus === "unavailable") {
+      reason = `${medoutContactLabels[contactStatus]} — choose another opponent.`; label = stateLabel;
+    } else if (contactStatus !== "agreed" && active.length) {
+      reason = "A faction member is already handling contact. Wait for their reply."; label = stateLabel;
+    }
+    const plannedHits = Math.min(allowance.remaining, remaining);
+    return {
+      targetId, targetName, name: targetName, isMine, canReserve: !reason && plannedHits > 0,
+      plannedHits, reason, label, availability, stateLabel, contactStatus,
+      contactPlayerId: String(target.contactPlayerId || ""), contactName, inCurrentRoster: !!member,
+      capacity, used, remaining, remainingHits: remaining, active,
+      playerRemainingHits: allowance.remaining,
+      reservedRemaining: active.reduce((sum, assignment) => sum + Math.max(0, medoutHits(assignment.plannedHits) - medoutHits(assignment.completedHits)), 0),
+    };
+  };
+  const medoutMessage = (targetName, hits) => `Hi ${targetName}, we're matched for a termed war and I'm allowed ${hits} hits. Would you be up for being medout buddies? If you can unequip your weapons and armour and med out for my hits, I'll do the same for you. Let's leave each other after attacks to keep hospital stays short.\n\nFor a short stay, a Small First Aid Kit is a good option if it clears your remaining hospital time. It adds 10 minutes of medical cooldown. Let me know what works for you!`;
+  const medoutPersonal = (plan, viewerPlayerId) => {
+    const assignment = medoutAllowance(plan, viewerPlayerId).active;
+    if (!assignment) return null;
+    const target = medoutTarget(plan, assignment.targetId, viewerPlayerId);
+    const reservedHits = medoutHits(assignment.plannedHits), completedHits = medoutHits(assignment.completedHits);
+    const remainingHits = Math.max(0, reservedHits - completedHits);
+    const isContact = target.contactPlayerId === String(viewerPlayerId);
+    let statusLabel = "Waiting for agreement";
+    if (!plan?.enabled) statusLabel = "Not enabled";
+    else if (plan.available === false || plan.readOnly) statusLabel = "Updates paused";
+    else if (!target.inCurrentRoster || ["declined", "unavailable"].includes(target.contactStatus)) statusLabel = "Choose another buddy";
+    else if (target.contactStatus === "agreed") statusLabel = "Agreement ready";
+    else if (isContact && target.contactStatus === "uncontacted") statusLabel = "Send the introduction";
+    return {
+      targetId: target.targetId, targetName: target.targetName, assignmentId: String(assignment.id || ""),
+      reservedHits, remainingHits, completedHits, contactStatus: target.contactStatus, isContact,
+      contactName: target.contactName, contactPlayerId: target.contactPlayerId,
+      introduction: plan?.enabled && plan.available !== false && target.inCurrentRoster && isContact && target.contactStatus === "uncontacted"
+        ? medoutMessage(target.targetName, reservedHits) : "",
+      statusLabel, reason: plan?.reason || "", inCurrentRoster: target.inCurrentRoster,
+      readOnly: !!plan?.readOnly || plan?.available === false,
+    };
+  };
+
   const activeDibsClaim = (payload, targetMemberId, nowMs = Date.now()) =>
     (Array.isArray(payload?.claims) ? payload.claims : []).find((claim) => (
       Number(claim?.targetMemberId || 0) === Number(targetMemberId || 0)
@@ -1047,6 +1171,11 @@
     isWarbuddyPageUrl,
     locationCode,
     memberAvailability,
+    medoutDibsRestriction,
+    medoutPlanMatches,
+    medoutPersonal,
+    medoutTarget,
+    medoutMessage,
     reconcileDibsSnapshot,
     normalizeDisplayMode,
     normalizeRosterFilter,
