@@ -5,7 +5,7 @@
   if (!core) return;
 
   const BACKEND_BASE_URL = "https://backend.grusmedia.no";
-  const SCRIPT_VERSION = "0.1.75";
+  const SCRIPT_VERSION = "0.1.76";
   const MEDOUT_URL = "https://askelads.grusmedia.no/medout-buddies";
   const PANEL_ID = "warbuddy-panel";
   const KEY_STORAGE = "warbuddy_api_key";

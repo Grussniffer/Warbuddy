@@ -10,6 +10,10 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.76
+
+- Shortens the Medout introduction while retaining the personalized hit allowance, reciprocal trade request, unequip/leave instructions and conditional Small First Aid Kit tip.
+
 ## 0.1.75
 
 - Explains Medout-protected Dibs with a lock and the assigned partners, their unfinished hits, and who is Online. Assigned partners still follow the normal hospital, location and Dibs rules.
