@@ -100,7 +100,7 @@ test('paused plans keep saved buddy details without allowing claims, while a dep
   assert.equal(core.medoutPersonal({...value,available:false},'1').introduction,'');
 });
 test('the introduction matches the existing frontend message exactly',()=>{
-  const expected="Hi Opponent! I'm allowed 20 hits in our termed war. Want to be medout buddies? Unequip weapons/armour and med out; I'll do the same. Let's leave each other.\n\nTip: Small First Aid Kits save medical cooldown if they clear your hospital time.";
+  const expected="Hi Opponent! I'm allowed 20 hits in our termed war. Want to be medout buddies? Unequip weapons/armour and med out; I'll do the same. Let's leave each other.\n\nWe could use Small First Aid Kits to save some med cooldown too, if they're enough to get us out :)";
   assert.equal(core.medoutMessage('Opponent',20),expected);
 });
 test('presentation derivations leave the shared snapshots unchanged',()=>{

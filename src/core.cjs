@@ -771,7 +771,7 @@
       reservedRemaining: active.reduce((sum, assignment) => sum + Math.max(0, medoutHits(assignment.plannedHits) - medoutHits(assignment.completedHits)), 0),
     };
   };
-  const medoutMessage = (targetName, hits) => `Hi ${targetName}! I'm allowed ${hits} hits in our termed war. Want to be medout buddies? Unequip weapons/armour and med out; I'll do the same. Let's leave each other.\n\nTip: Small First Aid Kits save medical cooldown if they clear your hospital time.`;
+  const medoutMessage = (targetName, hits) => `Hi ${targetName}! I'm allowed ${hits} hits in our termed war. Want to be medout buddies? Unequip weapons/armour and med out; I'll do the same. Let's leave each other.\n\nWe could use Small First Aid Kits to save some med cooldown too, if they're enough to get us out :)`;
   const medoutPersonal = (plan, viewerPlayerId) => {
     const assignment = medoutAllowance(plan, viewerPlayerId).active;
     if (!assignment) return null;

@@ -10,6 +10,10 @@ On your faction's frontend, open:
 - `/releases?tab=dibs` for the complete ticket-lottery player/admin guide.
 - `/releases?tab=changes` for product release notes.
 
+## 0.1.77
+
+- Makes the Medout introduction's medical suggestion more casual and friendly.
+
 ## 0.1.76
 
 - Shortens the Medout introduction while retaining the personalized hit allowance, reciprocal trade request, unequip/leave instructions and conditional Small First Aid Kit tip.
